@@ -866,6 +866,154 @@ async def phygital_arbitrage(
 
 
 # ---------------------------------------------------------------------------
+# Wallet Portfolio Valuation — $0.25 x402 tier
+# Queries a Polygon wallet for Courtyard NFTs, cross-refs with TCG prices
+# ---------------------------------------------------------------------------
+
+ALCHEMY_KEY = os.getenv("ALCHEMY_API_KEY", "")
+
+@app.get("/api/v1/wallet/portfolio")
+@limiter.limit("10/minute")
+async def wallet_portfolio(
+    request: Request,
+    address: str = Query(..., description="Polygon wallet address (0x...)"),
+):
+    """
+    💎 Vault Portfolio Valuation — $0.25
+
+    Input a Polygon wallet address to see all Courtyard.io vaulted cards,
+    their TCGPlayer raw values, grade-adjusted estimated values, and total P&L.
+
+    Powered by Alchemy NFT API + TCG Oracle grade multiplier model.
+    """
+    import re
+    import requests as http_requests
+    from difflib import SequenceMatcher
+
+    if not ALCHEMY_KEY:
+        raise HTTPException(status_code=503, detail="Alchemy API key not configured")
+
+    if not address.startswith("0x") or len(address) != 42:
+        raise HTTPException(status_code=400, detail="Invalid Polygon address")
+
+    COURTYARD_CONTRACT = "0x251be3a17af4892035c37ebf5890f4a4d889dcad"
+
+    # 1. Query Alchemy for NFTs owned by this wallet from Courtyard contract
+    try:
+        url = f"https://polygon-mainnet.g.alchemy.com/nft/v3/{ALCHEMY_KEY}/getNFTsForOwner"
+        resp = http_requests.get(url, params={
+            "owner": address,
+            "contractAddresses[]": COURTYARD_CONTRACT,
+            "withMetadata": "true",
+            "pageSize": 100,
+        }, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Alchemy error: {str(e)}")
+
+    nfts = data.get("ownedNfts", [])
+    if not nfts:
+        return {
+            "status": "ok",
+            "address": address,
+            "total_vaulted": 0,
+            "vault_value_raw": 0,
+            "vault_value_graded": 0,
+            "cards": [],
+        }
+
+    # 2. Get TCG prices
+    mdb = _get_db()
+    tcg_prices = {}
+    if mdb:
+        rows = mdb.execute("""
+            SELECT c.product_id, c.name, 
+                   COALESCE(ph.market_price, ss.last_price) as price
+            FROM cards c
+            LEFT JOIN price_history ph ON c.product_id = ph.product_id
+            LEFT JOIN shroomy_stats ss ON c.product_id = ss.product_id
+            WHERE COALESCE(ph.market_price, ss.last_price) > 0
+            GROUP BY c.product_id
+        """).fetchall()
+        for pid, name, price in rows:
+            tcg_prices[name.lower()] = {"id": pid, "name": name, "price": price}
+        mdb.close()
+
+    # 3. Build portfolio
+    grade_multipliers = {10: 8, 9.5: 5, 9: 3, 8.5: 2, 8: 1.5, 7: 1.2, 6: 1.0}
+    cards = []
+    total_raw = 0
+    total_graded = 0
+
+    for nft in nfts:
+        raw_meta = nft.get("raw", {}).get("metadata", {})
+        attrs = {a["trait_type"]: a["value"] for a in raw_meta.get("attributes", []) if "trait_type" in a}
+        
+        nft_name = nft.get("name") or attrs.get("Name", "Unknown")
+        grade_str = attrs.get("Grade", "")
+        grader = attrs.get("Grader", "")
+        
+        # Parse grade number
+        grade_num = None
+        import re as re2
+        m = re2.search(r'(\d+\.?\d*)', grade_str)
+        if m:
+            grade_num = float(m.group(1))
+
+        # Extract card name for TCG matching
+        clean = re2.sub(r'\(.*?\)', '', nft_name).strip()
+        clean = re2.sub(r'^\d{4}\s+', '', clean)
+        clean = re2.sub(r'^[^#]*#\S+\s+', '', clean)
+        card_name = clean.split(' - ')[0].strip()
+
+        # Find TCG match
+        tcg_match = None
+        best_conf = 0
+        search_lower = card_name.lower()
+        for tcg_name_lower, tcg_info in tcg_prices.items():
+            if len(search_lower) >= 3 and search_lower[:10] in tcg_name_lower:
+                conf = SequenceMatcher(None, search_lower, tcg_name_lower).ratio()
+                if conf > best_conf and conf > 0.3:
+                    best_conf = conf
+                    tcg_match = tcg_info
+
+        raw_price = tcg_match["price"] if tcg_match else 0
+        multiplier = grade_multipliers.get(grade_num, 1.5) if grade_num else 1.0
+        graded_value = raw_price * multiplier
+
+        total_raw += raw_price
+        total_graded += graded_value
+
+        cards.append({
+            "name": nft_name,
+            "grade": f"{grader} {grade_str}".strip(),
+            "grade_number": grade_num,
+            "category": attrs.get("Category", ""),
+            "set": attrs.get("Set", ""),
+            "year": attrs.get("Year"),
+            "tcg_raw_price": round(raw_price, 2),
+            "grade_multiplier": f"{multiplier}x",
+            "estimated_graded_value": round(graded_value, 2),
+            "tcg_match": tcg_match["name"] if tcg_match else None,
+            "match_confidence": round(best_conf, 2),
+        })
+
+    cards.sort(key=lambda x: x["estimated_graded_value"], reverse=True)
+
+    return {
+        "status": "ok",
+        "address": address,
+        "total_vaulted": len(cards),
+        "vault_value_raw": round(total_raw, 2),
+        "vault_value_graded": round(total_graded, 2),
+        "grade_premium": round(total_graded - total_raw, 2),
+        "premium_pct": f"{((total_graded / total_raw - 1) * 100):.1f}%" if total_raw > 0 else "N/A",
+        "cards": cards,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
@@ -876,4 +1024,3 @@ if __name__ == "__main__":
         reload=os.getenv("DEV_MODE", "").lower() == "true",
         log_level="info",
     )
-
