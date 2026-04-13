@@ -636,6 +636,230 @@ async def simulate_price(
 
 
 # ---------------------------------------------------------------------------
+# Phygital Arbitrage Screener — FREE tier
+# Cross-references Courtyard.io tokenized cards with TCGPlayer raw prices
+# ---------------------------------------------------------------------------
+
+PHYGITAL_DB = Path(__file__).parent.parent / "tcg-oracle-tools" / "data" / "phygital.db"
+
+
+def _get_phygital_db():
+    """Get connection to the phygital database."""
+    if not PHYGITAL_DB.exists():
+        return None
+    return sqlite3.connect(f"file:{PHYGITAL_DB}?mode=ro", uri=True)
+
+
+@app.get("/api/v1/phygital/stats")
+@limiter.limit("30/minute")
+async def phygital_stats(request: Request):
+    """
+    📊 Phygital Market Stats
+
+    Overview of tokenized trading cards on Courtyard.io (Polygon).
+    Shows total cards, categories, and grade distribution.
+    """
+    pdb = _get_phygital_db()
+    if not pdb:
+        raise HTTPException(status_code=503, detail="Phygital database not available")
+
+    try:
+        total = pdb.execute("SELECT COUNT(*) FROM courtyard_cards").fetchone()[0]
+        categories = pdb.execute(
+            "SELECT category, COUNT(*) as cnt FROM courtyard_cards "
+            "WHERE category IS NOT NULL AND category != '' "
+            "GROUP BY category ORDER BY cnt DESC"
+        ).fetchall()
+        grades = pdb.execute(
+            "SELECT grader, ROUND(grade_number) as g, COUNT(*) as cnt "
+            "FROM courtyard_cards WHERE grade_number IS NOT NULL "
+            "GROUP BY grader, ROUND(grade_number) ORDER BY cnt DESC LIMIT 15"
+        ).fetchall()
+
+        return {
+            "status": "ok",
+            "total_tokenized_cards": total,
+            "source": "Courtyard.io (Polygon)",
+            "contract": "0x251be3a17af4892035c37ebf5890f4a4d889dcad",
+            "categories": [{"category": c, "count": n} for c, n in categories],
+            "grade_distribution": [
+                {"grader": g, "grade": int(gn), "count": cnt} for g, gn, cnt in grades
+            ],
+        }
+    finally:
+        pdb.close()
+
+
+@app.get("/api/v1/phygital/search")
+@limiter.limit("30/minute")
+async def phygital_search(
+    request: Request,
+    query: str = Query(..., description="Card name to search in Courtyard tokenized cards"),
+    category: Optional[str] = Query(None, description="Filter: Pokémon, Baseball, Football, Basketball, Magic The Gathering"),
+    grade_min: Optional[float] = Query(None, description="Minimum grade (e.g. 9.0)"),
+    limit: int = Query(20, ge=1, le=100),
+):
+    """
+    🔍 Search Tokenized Cards
+
+    Search 267K+ tokenized graded cards on Courtyard.io.
+    Each card is vaulted by Brink's, insured, and tradeable as a Polygon NFT.
+    """
+    pdb = _get_phygital_db()
+    if not pdb:
+        raise HTTPException(status_code=503, detail="Phygital database not available")
+
+    try:
+        sql = "SELECT token_id, name, grade, grader, grade_number, set_name, year, category FROM courtyard_cards WHERE 1=1"
+        params = []
+
+        if query:
+            sql += " AND name LIKE ?"
+            params.append(f"%{query}%")
+        if category:
+            sql += " AND category LIKE ?"
+            params.append(f"%{category}%")
+        if grade_min:
+            sql += " AND grade_number >= ?"
+            params.append(grade_min)
+
+        sql += " ORDER BY grade_number DESC LIMIT ?"
+        params.append(limit)
+
+        rows = pdb.execute(sql, params).fetchall()
+
+        results = []
+        for token_id, name, grade, grader, grade_num, set_name, year, cat in rows:
+            results.append({
+                "token_id": token_id,
+                "name": name,
+                "grade": grade,
+                "grader": grader,
+                "grade_number": grade_num,
+                "set": set_name,
+                "year": year,
+                "category": cat,
+                "marketplace": f"https://courtyard.io/item/{token_id}",
+            })
+
+        return {
+            "status": "ok",
+            "query": query,
+            "total": len(results),
+            "results": results,
+        }
+    finally:
+        pdb.close()
+
+
+@app.get("/api/v1/phygital/arbitrage")
+@limiter.limit("20/minute")
+async def phygital_arbitrage(
+    request: Request,
+    category: Optional[str] = Query("Pokémon", description="Category filter"),
+    grade_min: float = Query(8.0, description="Minimum grade"),
+    limit: int = Query(25, ge=1, le=100),
+):
+    """
+    💰 Phygital Arbitrage Screener
+
+    Cross-references Courtyard.io tokenized card prices with TCGPlayer raw prices.
+    Surfaces cards where graded tokenized versions may be mispriced vs raw market.
+
+    A PSA 10 graded card is typically 3-10x the raw price.
+    If the tokenized price is BELOW that multiplier, it's arbitrage.
+    """
+    pdb = _get_phygital_db()
+    mdb = _get_db()
+
+    if not pdb:
+        raise HTTPException(status_code=503, detail="Phygital database not available")
+
+    try:
+        import re
+        from difflib import SequenceMatcher
+
+        # Get graded cards from Courtyard
+        cy_cards = pdb.execute("""
+            SELECT token_id, name, grade, grader, grade_number, set_name, year, category
+            FROM courtyard_cards
+            WHERE grade_number >= ? AND category LIKE ?
+              AND name IS NOT NULL AND name != ''
+            ORDER BY grade_number DESC
+        """, [grade_min, f"%{category}%"]).fetchall()
+
+        # Get TCG prices
+        tcg_prices = {}
+        if mdb:
+            rows = mdb.execute(
+                "SELECT productId, name, marketPrice FROM products WHERE marketPrice > 0"
+            ).fetchall()
+            for pid, name, price in rows:
+                tcg_prices[name.lower()] = {"id": pid, "name": name, "price": price}
+
+        # Cross-reference
+        opportunities = []
+        for cy_row in cy_cards:
+            token_id, cy_name, grade, grader, grade_num, set_name, year, cat = cy_row
+
+            # Extract card name
+            clean = re.sub(r'\(.*?\)', '', cy_name).strip()
+            clean = re.sub(r'^[\d]{4}\s+', '', clean)
+            clean = re.sub(r'^[^#]*#\S+\s+', '', clean)
+            parts = clean.split(' - ')
+            card_name = parts[0].strip()
+
+            if len(card_name) < 3:
+                continue
+
+            # Find in TCG data
+            best_match = None
+            best_conf = 0
+            search_lower = card_name.lower()
+
+            for tcg_name_lower, tcg_info in tcg_prices.items():
+                if search_lower[:10] in tcg_name_lower:
+                    conf = SequenceMatcher(None, search_lower, tcg_name_lower).ratio()
+                    if conf > best_conf and conf > 0.3:
+                        best_conf = conf
+                        best_match = tcg_info
+
+            if best_match:
+                # Grade multiplier estimate
+                multipliers = {10: 8, 9.5: 5, 9: 3, 8.5: 2, 8: 1.5, 7: 1.2}
+                expected_mult = multipliers.get(grade_num, 1.5)
+                estimated_graded_value = best_match["price"] * expected_mult
+
+                opportunities.append({
+                    "courtyard_name": cy_name,
+                    "card_name": card_name,
+                    "grade": f"{grader} {grade}",
+                    "grade_number": grade_num,
+                    "tcg_raw_name": best_match["name"],
+                    "tcg_raw_price": round(best_match["price"], 2),
+                    "estimated_graded_value": round(estimated_graded_value, 2),
+                    "grade_multiplier": f"{expected_mult}x",
+                    "match_confidence": round(best_conf, 2),
+                    "courtyard_url": f"https://courtyard.io",
+                })
+
+        opportunities.sort(key=lambda x: x["estimated_graded_value"], reverse=True)
+
+        return {
+            "status": "ok",
+            "screener": "Phygital Arbitrage",
+            "description": "Cross-reference: Courtyard.io tokenized cards vs TCGPlayer raw prices",
+            "total_courtyard_cards": len(cy_cards),
+            "matches": len(opportunities),
+            "opportunities": opportunities[:limit],
+        }
+    finally:
+        pdb.close()
+        if mdb:
+            mdb.close()
+
+
+# ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
@@ -646,3 +870,4 @@ if __name__ == "__main__":
         reload=os.getenv("DEV_MODE", "").lower() == "true",
         log_level="info",
     )
+
