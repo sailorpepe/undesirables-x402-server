@@ -788,12 +788,18 @@ async def phygital_arbitrage(
             ORDER BY grade_number DESC
         """, [grade_min, f"%{category}%"]).fetchall()
 
-        # Get TCG prices
+        # Get TCG prices from market_memory.sqlite
         tcg_prices = {}
         if mdb:
-            rows = mdb.execute(
-                "SELECT productId, name, marketPrice FROM products WHERE marketPrice > 0"
-            ).fetchall()
+            rows = mdb.execute("""
+                SELECT c.product_id, c.name, 
+                       COALESCE(ph.market_price, ss.last_price) as price
+                FROM cards c
+                LEFT JOIN price_history ph ON c.product_id = ph.product_id
+                LEFT JOIN shroomy_stats ss ON c.product_id = ss.product_id
+                WHERE COALESCE(ph.market_price, ss.last_price) > 0
+                GROUP BY c.product_id
+            """).fetchall()
             for pid, name, price in rows:
                 tcg_prices[name.lower()] = {"id": pid, "name": name, "price": price}
 
