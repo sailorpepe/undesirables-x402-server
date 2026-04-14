@@ -421,7 +421,7 @@ async def root():
         "network": NETWORK,
         "endpoints": {
             "free": [
-                {"path": "/api/v1/search", "description": "Search 187K+ TCG products"},
+                {"path": "/api/v1/search", "description": "Search 370K+ TCG products"},
                 {"path": "/api/v1/market", "description": "Daily market snapshot"},
             ],
             "paid": [
@@ -452,7 +452,7 @@ async def ai_plugin():
         "name_for_model": "tcg_oracle",
         "description_for_human": (
             "AI-powered TCG card grading, Monte Carlo price simulation, "
-            "and market data across 187K+ products and 13 card games."
+            "and market data across 370K+ products and 25 card games."
         ),
         "description_for_model": (
             "Search TCG products, grade trading cards using AI vision "
@@ -490,7 +490,7 @@ async def agent_card():
         "name": "The Undesirables TCG Oracle",
         "description": (
             "AI-powered TCG card grading, Monte Carlo price simulation, "
-            "and market intelligence. 187K+ products across 13 games. "
+            "and market intelligence. 370K+ products across 25 games. "
             "Pay-per-call via x402 USDC on Base."
         ),
         "url": "https://methods-supplier-foundation-stuck.trycloudflare.com",
@@ -500,7 +500,7 @@ async def agent_card():
             {
                 "id": "search_tcg",
                 "name": "Search TCG Products",
-                "description": "Search 187,689 TCG products across 13 games",
+                "description": "Search 370,158 TCG products across 25 games",
                 "tags": ["tcg", "pokemon", "search", "free"],
             },
             {
@@ -543,7 +543,7 @@ async def search_tcg_products(
     limit: int = Query(10, ge=1, le=50, description="Max results (1-50)"),
 ):
     """
-    🆓 **FREE** — Search 187K+ TCG products across 13 games.
+    🆓 **FREE** — Search 370K+ TCG products across 25 games.
     
     Returns product names, sets, and current market prices from TCGCSV.
     No payment required.
@@ -757,18 +757,80 @@ async def phygital_search(
 async def phygital_arbitrage(
     request: Request,
     category: Optional[str] = Query("Pokémon", description="Category filter"),
-    grade_min: float = Query(8.0, description="Minimum grade"),
+    grade_min: float = Query(7.0, description="Minimum grade"),
     limit: int = Query(25, ge=1, le=100),
 ):
     """
-    💰 Phygital Arbitrage Screener
+    💰 Phygital Arbitrage Screener (Verified)
 
-    Cross-references Courtyard.io tokenized card prices with TCGPlayer raw prices.
-    Surfaces cards where graded tokenized versions may be mispriced vs raw market.
-
-    A PSA 10 graded card is typically 3-10x the raw price.
-    If the tokenized price is BELOW that multiplier, it's arbitrage.
+    Cross-references Courtyard.io tokenized card prices with TCGPlayer market data.
+    Uses SET + CARD NUMBER matching for verified accuracy (no fuzzy name guessing).
+    Applies grade multipliers: PSA 10 = 8x, 9 = 3x, 8.5 = 2x, 8 = 1.5x raw.
     """
+    import re
+
+    # Grade multipliers
+    GRADE_MULT = {10: 8.0, 9.5: 5.0, 9: 3.0, 8.5: 2.0, 8: 1.5, 7.5: 1.2, 7: 1.0}
+
+    # Try pre-computed verified results first
+    verified_path = Path(__file__).parent.parent / "tcg-oracle-tools" / "data" / "verified_arbitrage.json"
+    if verified_path.exists():
+        try:
+            with open(verified_path) as f:
+                verified = json.load(f)
+
+            # Filter by category and grade
+            filtered = []
+            for v in verified:
+                if category and category.lower() not in v.get("category", "").lower():
+                    continue
+                gn = v.get("grade_number")
+                if gn is not None and gn < grade_min:
+                    continue
+                filtered.append(v)
+
+            # Sort: buy signals first (negative spread), then by spread
+            buy_signals = sorted([v for v in filtered if v.get("spread", 0) < 0], key=lambda x: x["spread"])
+            overpriced = sorted([v for v in filtered if v.get("spread", 0) >= 0], key=lambda x: x["spread_pct"])
+
+            opportunities = []
+            for item in buy_signals + overpriced:
+                opportunities.append({
+                    "courtyard_name": item.get("raw_name", ""),
+                    "card_name": item.get("card_name", ""),
+                    "set": item.get("tcg_set", ""),
+                    "card_number": item.get("card_number", ""),
+                    "grade": f"{item.get('grader', '')} {item.get('grade', '')}".strip(),
+                    "grade_number": item.get("grade_number"),
+                    "listing_usd": round(item.get("listing_usd", 0), 2),
+                    "tcg_raw_price": round(item.get("raw_price", 0), 2),
+                    "grade_multiplier": f"{item.get('grade_multiplier', 1)}x",
+                    "estimated_graded_value": round(item.get("estimated_graded_value", 0), 2),
+                    "spread_usd": round(item.get("spread", 0), 2),
+                    "spread_pct": round(item.get("spread_pct", 0), 1),
+                    "signal": "BUY" if item.get("spread", 0) < 0 else "OVERPRICED",
+                    "match_type": "verified (set+number)",
+                    "tcg_matched_name": item.get("tcg_name", ""),
+                })
+
+            return {
+                "status": "ok",
+                "screener": "Phygital Arbitrage (Verified)",
+                "description": "Courtyard.io NFTs vs TCGPlayer — matched by set name + card number + grade-adjusted pricing",
+                "methodology": {
+                    "matching": "Exact set name + card number verification via pokemontcg.io API",
+                    "pricing": "TCGPlayer raw price × grade multiplier (PSA 10=8x, 9=3x, 8.5=2x, 8=1.5x)",
+                    "source": "OpenSea listings → Alchemy metadata → pokemontcg.io cross-reference",
+                },
+                "total_verified": len(filtered),
+                "buy_signals": len(buy_signals),
+                "overpriced": len(overpriced),
+                "opportunities": opportunities[:limit],
+            }
+        except Exception as e:
+            logger.warning(f"Verified arb file error: {e}")
+
+    # Fallback: live DB cross-reference
     pdb = _get_phygital_db()
     mdb = _get_db()
 
@@ -776,10 +838,6 @@ async def phygital_arbitrage(
         raise HTTPException(status_code=503, detail="Phygital database not available")
 
     try:
-        import re
-        from difflib import SequenceMatcher
-
-        # Get graded cards from Courtyard
         cy_cards = pdb.execute("""
             SELECT token_id, name, grade, grader, grade_number, set_name, year, category
             FROM courtyard_cards
@@ -788,11 +846,10 @@ async def phygital_arbitrage(
             ORDER BY grade_number DESC
         """, [grade_min, f"%{category}%"]).fetchall()
 
-        # Get TCG prices from market_memory.sqlite
         tcg_prices = {}
         if mdb:
             rows = mdb.execute("""
-                SELECT c.product_id, c.name, 
+                SELECT c.product_id, c.name, c.clean_name,
                        COALESCE(ph.market_price, ss.last_price) as price
                 FROM cards c
                 LEFT JOIN price_history ph ON c.product_id = ph.product_id
@@ -800,53 +857,55 @@ async def phygital_arbitrage(
                 WHERE COALESCE(ph.market_price, ss.last_price) > 0
                 GROUP BY c.product_id
             """).fetchall()
-            for pid, name, price in rows:
-                tcg_prices[name.lower()] = {"id": pid, "name": name, "price": price}
+            for pid, name, clean_name, price in rows:
+                key = (clean_name or name).lower()
+                tcg_prices[key] = {"id": pid, "name": name, "price": price}
 
-        # Cross-reference
         opportunities = []
         for cy_row in cy_cards:
             token_id, cy_name, grade, grader, grade_num, set_name, year, cat = cy_row
 
-            # Extract card name
-            clean = re.sub(r'\(.*?\)', '', cy_name).strip()
-            clean = re.sub(r'^[\d]{4}\s+', '', clean)
-            clean = re.sub(r'^[^#]*#\S+\s+', '', clean)
-            parts = clean.split(' - ')
-            card_name = parts[0].strip()
-
-            if len(card_name) < 3:
+            # Extract card number and name from Courtyard listing
+            num_match = re.search(r'#(\d+)(?:/\d+)?', cy_name or "")
+            if not num_match:
                 continue
 
-            # Find in TCG data
+            card_num = num_match.group(1).lstrip("0") or "0"
+            after = (cy_name or "")[num_match.end():].strip()
+            after = re.sub(r'\(.*?\)', '', after).strip()
+            card_name = re.sub(r'\s*-\s*(Holo|Reverse|Full Art|Secret|Ultra).*$', '', after, flags=re.IGNORECASE).strip()
+
+            if len(card_name) < 2:
+                continue
+
+            # Match by name (require high confidence for DB match)
+            search_lower = card_name.lower()
             best_match = None
             best_conf = 0
-            search_lower = card_name.lower()
 
-            for tcg_name_lower, tcg_info in tcg_prices.items():
-                if search_lower[:10] in tcg_name_lower:
-                    conf = SequenceMatcher(None, search_lower, tcg_name_lower).ratio()
-                    if conf > best_conf and conf > 0.3:
+            for tcg_key, tcg_info in tcg_prices.items():
+                if search_lower == tcg_key or search_lower in tcg_key:
+                    conf = 1.0 if search_lower == tcg_key else 0.85
+                    if conf > best_conf:
                         best_conf = conf
                         best_match = tcg_info
 
-            if best_match:
-                # Grade multiplier estimate
-                multipliers = {10: 8, 9.5: 5, 9: 3, 8.5: 2, 8: 1.5, 7: 1.2}
-                expected_mult = multipliers.get(grade_num, 1.5)
-                estimated_graded_value = best_match["price"] * expected_mult
+            if best_match and best_conf >= 0.8:
+                mult = GRADE_MULT.get(grade_num, 1.5) if grade_num else 1.0
+                est_graded = best_match["price"] * mult
 
                 opportunities.append({
                     "courtyard_name": cy_name,
                     "card_name": card_name,
+                    "card_number": card_num,
                     "grade": f"{grader} {grade}",
                     "grade_number": grade_num,
                     "tcg_raw_name": best_match["name"],
                     "tcg_raw_price": round(best_match["price"], 2),
-                    "estimated_graded_value": round(estimated_graded_value, 2),
-                    "grade_multiplier": f"{expected_mult}x",
+                    "estimated_graded_value": round(est_graded, 2),
+                    "grade_multiplier": f"{mult}x",
                     "match_confidence": round(best_conf, 2),
-                    "courtyard_url": f"https://courtyard.io",
+                    "match_type": "db_name_match",
                 })
 
         opportunities.sort(key=lambda x: x["estimated_graded_value"], reverse=True)
@@ -854,7 +913,7 @@ async def phygital_arbitrage(
         return {
             "status": "ok",
             "screener": "Phygital Arbitrage",
-            "description": "Cross-reference: Courtyard.io tokenized cards vs TCGPlayer raw prices",
+            "description": "Courtyard.io tokenized cards vs TCGPlayer raw prices (DB match)",
             "total_courtyard_cards": len(cy_cards),
             "matches": len(opportunities),
             "opportunities": opportunities[:limit],
