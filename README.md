@@ -13,6 +13,8 @@ Built on the Coinbase Developer Platform's [Bazaar Discovery protocol](https://d
 | Endpoint | Price (USDC) | Function |
 |----------|-------------|----------|
 | `GET /api/v1/grade` | **$0.10** | Multimodal vision grading (predicts PSA / Beckett scores) |
+| `GET /api/v1/crypto-oracle` | **$0.05** | Shroomy Web3 Oracle (NFT floor pricing + Monte Carlo simulation) |
+| `GET /api/v1/coin-history` | **$0.05** | Historical Token Simulator (CoinGecko historical prices + Monte Carlo) |
 | `GET /api/v1/simulate` | **$0.015** | Monte Carlo forecasting (Heston, Merton, Kou stochastic models) |
 | `GET /api/v1/search` | **Free** | TCGPlayer ID lookup & product metadata mapping |
 | `GET /api/v1/market` | **Free** | Price distributions & liquidity metrics |
