@@ -15,6 +15,9 @@ Built on the Coinbase Developer Platform's Bazaar Discovery protocol, this serve
 | `GET /api/v1/grade` | **$0.10** | Multimodal vision grading (predicts PSA / Beckett scores) |
 | `GET /api/v1/crypto-oracle` | **$0.05** | Shroomy Web3 Oracle — NFT floor pricing via Alchemy + Heston Monte Carlo |
 | `GET /api/v1/coin-history` | **$0.05** | Historical Token Simulator — CoinGecko real-time token prices + Heston Monte Carlo |
+| `GET /api/v1/arb-cross` | **$1.00** | Cross-Platform Arb Scanner — Polymarket vs Kalshi price discrepancies via Gen3 NLI |
+| `GET /api/v1/arb-basket` | **$0.50** | Basket Arb Scanner — Multi-outcome aggregator finding guaranteed risk-free NO yields |
+| `GET /api/v1/arb-weather` | **$0.25** | Weather Edge Scanner — Real-time NWS forecast divergence against Kalshi |
 | `GET /api/v1/simulate` | **$0.015** | TCG Monte Carlo forecasting (Heston, Merton, Kou stochastic models) |
 | `GET /api/v1/search` | **Free** | TCGPlayer ID lookup & product metadata mapping |
 | `GET /api/v1/market` | **Free** | Price distributions & liquidity metrics |
