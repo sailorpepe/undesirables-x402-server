@@ -354,7 +354,7 @@ try:
                     "required": ["contract_address"]
                 },
                 output=OutputConfig(
-                    example={"status": "ok", "floor_price": 0.45, "forecast": {"50th_percentile": 0.52, "95th_percentile": 1.10}}
+                    example={"status": "ok", "floor_price": 0.45, "model_params": {"drift": 0.15, "vol_of_vol": 0.85}, "forecast": {"50th_percentile": 0.52, "95th_percentile": 1.10}}
                 )
             )
         },
@@ -375,7 +375,7 @@ try:
                     "required": ["coin_id"]
                 },
                 output=OutputConfig(
-                    example={"status": "ok", "current_price": 63000.5, "forecast": {"50th_percentile": 67000.1, "95th_percentile": 85000.3}}
+                    example={"status": "ok", "current_price": 63000.5, "model_params": {"drift": 0.08, "vol_of_vol": 0.65}, "forecast": {"50th_percentile": 67000.1, "95th_percentile": 85000.3}}
                 )
             )
         },
@@ -832,6 +832,12 @@ async def crypto_oracle(
         "model": "heston_stochastic",
         "days": days,
         "simulations": 20000,
+        "model_params": {
+            "drift": mu,
+            "vol_of_vol": sigma,
+            "mean_reversion": 1.5,
+            "long_term_variance": round(sigma ** 2, 4)
+        },
         "forecast_percentiles": {
             "5th": paths[int(n * 0.05)],
             "25th": paths[int(n * 0.25)],
@@ -913,6 +919,12 @@ async def coin_history(
         "model": "heston_stochastic",
         "days": days,
         "simulations": 20000,
+        "model_params": {
+            "drift": mu,
+            "vol_of_vol": sigma,
+            "mean_reversion": 1.5,
+            "long_term_variance": round(sigma ** 2, 4)
+        },
         "forecast_percentiles": {
             "5th": paths[int(n * 0.05)],
             "25th": paths[int(n * 0.25)],
