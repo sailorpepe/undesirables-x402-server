@@ -243,6 +243,9 @@ async def lifespan(app: FastAPI):
 ║  $0.015:  /api/v1/simulate                           ║
 ║  $0.05:   /api/v1/crypto-oracle                      ║
 ║  $0.05:   /api/v1/coin-history                       ║
+║  $1.00:   /api/v1/arb-cross                          ║
+║  $0.50:   /api/v1/arb-basket                         ║
+║  $0.25:   /api/v1/arb-weather                        ║
 ║                                                      ║
 ║  Docs:    http://localhost:{PORT}/docs                 ║
 ╚══════════════════════════════════════════════════════╝
@@ -376,6 +379,59 @@ try:
                 },
                 output=OutputConfig(
                     example={"status": "ok", "current_price": 63000.5, "model_params": {"drift": 0.08, "vol_of_vol": 0.65}, "forecast": {"50th_percentile": 67000.1, "95th_percentile": 85000.3}}
+                )
+            )
+        },
+        "GET /api/v1/arb-cross": {
+            "description": "Cross-Platform Arbitrage Scanner: Polymarket vs Kalshi price discrepancies via Gen3 NLI.",
+            "accepts": {
+                "scheme": "exact",
+                "payTo": PAYMENT_ADDRESS,
+                "price": "$1.00",
+                "network": NETWORK,
+            },
+            "extensions": declare_discovery_extension(
+                input_schema={
+                    "properties": {
+                        "min_edge": {"type": "number", "description": "Minimum edge percentage (default 3.0)"}
+                    }
+                },
+                output=OutputConfig(
+                    example={"status": "ok", "scan_type": "cross-platform", "opportunities": [{"market1": "Kalshi", "market2": "Polymarket", "edge_percent": 6.8}]}
+                )
+            )
+        },
+        "GET /api/v1/arb-basket": {
+            "description": "Basket Arbitrage Scanner: Multi-outcome aggregation where buying all NO outcomes guarantees profit.",
+            "accepts": {
+                "scheme": "exact",
+                "payTo": PAYMENT_ADDRESS,
+                "price": "$0.50",
+                "network": NETWORK,
+            },
+            "extensions": declare_discovery_extension(
+                input_schema={
+                    "properties": {}
+                },
+                output=OutputConfig(
+                    example={"status": "ok", "scan_type": "basket", "opportunities": [{"event": "Who will win?", "total_no_cost": 6.42, "guaranteed_payout": 7.0}]}
+                )
+            )
+        },
+        "GET /api/v1/arb-weather": {
+            "description": "Weather Edge Scanner: NWS forecast vs Kalshi temperature derivatives.",
+            "accepts": {
+                "scheme": "exact",
+                "payTo": PAYMENT_ADDRESS,
+                "price": "$0.25",
+                "network": NETWORK,
+            },
+            "extensions": declare_discovery_extension(
+                input_schema={
+                    "properties": {}
+                },
+                output=OutputConfig(
+                    example={"status": "ok", "scan_type": "weather", "opportunities": [{"city": "Miami, FL", "edge": 0.12}]}
                 )
             )
         },
@@ -621,6 +677,24 @@ async def agent_card():
                 "name": "Historical Token Simulator",
                 "description": "CoinGecko Historical pricing + Monte Carlo — $0.05 USDC",
                 "tags": ["crypto", "coingecko", "token", "history", "oracle", "paid"],
+            },
+            {
+                "id": "arb_cross",
+                "name": "Cross-Platform Arb Scanner",
+                "description": "Kalshi vs Polymarket NLI Discrepancies — $1.00 USDC",
+                "tags": ["arbitrage", "prediction-markets", "paid", "alpha"],
+            },
+            {
+                "id": "arb_basket",
+                "name": "Basket Arb Scanner",
+                "description": "Multi-outcome guaranteed NO aggregation — $0.50 USDC",
+                "tags": ["arbitrage", "prediction-markets", "paid", "alpha"],
+            },
+            {
+                "id": "arb_weather",
+                "name": "Weather Arb Scanner",
+                "description": "NWS vs Kalshi Temperature edges — $0.25 USDC",
+                "tags": ["arbitrage", "weather", "kalshi", "paid", "alpha"],
             },
         ],
         "payment": {
@@ -938,6 +1012,58 @@ async def coin_history(
     return {"status": "ok", "tool": "coin_history", "price": "$0.05", "data": result}
 
 
+@app.get("/api/v1/arb-cross", tags=["Paid — $1.00"])
+async def arb_cross(
+    min_edge: float = Query(3.0, description="Minimum edge percentage to filter by")
+):
+    """
+    💰 **$1.00 USDC** — Premium Cross-Platform Arbitrage Scanner.
+    Finds pricing inefficiencies between Kalshi and Polymarket using Gen3 NLI intelligence.
+    """
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"http://127.0.0.1:3000/api/arbs?scanType=cross-platform&minEdge={min_edge}&maxDays=1500", timeout=120)
+            if resp.status_code != 200:
+                raise HTTPException(status_code=500, detail=f"Shroomy Oracle error: {resp.text}")
+            data = resp.json()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch Arb data: {str(e)}")
+
+    return {"status": "ok", "tool": "arb_cross", "price": "$1.00", "data": data}
+
+@app.get("/api/v1/arb-basket", tags=["Paid — $0.50"])
+async def arb_basket():
+    """
+    💰 **$0.50 USDC** — Basket Arbitrage Scanner.
+    Identifies multi-outcome prediction markets on Polymarket where buying all NO contracts guarantees a risk-free yield.
+    """
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get("http://127.0.0.1:3000/api/arbs?scanType=basket&minEdge=3&maxDays=1500", timeout=120)
+            if resp.status_code != 200:
+                raise HTTPException(status_code=500, detail=f"Shroomy Oracle error: {resp.text}")
+            data = resp.json()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch Basket Arb data: {str(e)}")
+
+    return {"status": "ok", "tool": "arb_basket", "price": "$0.50", "data": data}
+
+@app.get("/api/v1/arb-weather", tags=["Paid — $0.25"])
+async def arb_weather():
+    """
+    💰 **$0.25 USDC** — Weather Edge Scanner.
+    Compares real-time National Weather Service (NWS) forecasts against Kalshi temperature derivatives.
+    """
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get("http://127.0.0.1:3000/api/weather-edge", timeout=120)
+            if resp.status_code != 200:
+                raise HTTPException(status_code=500, detail=f"Shroomy Oracle error: {resp.text}")
+            data = resp.json()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch Weather Arb data: {str(e)}")
+
+    return {"status": "ok", "tool": "arb_weather", "price": "$0.25", "data": data}
 
 # ---------------------------------------------------------------------------
 # Phygital Arbitrage Screener — FREE tier
