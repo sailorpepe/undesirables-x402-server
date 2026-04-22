@@ -296,6 +296,7 @@ try:
     x402_routes = {
         "GET /api/v1/grade": {
             "description": "AI-powered vision engine for grading physical Trading Card Game (TCG) assets like Pokémon and Magic: The Gathering to predict PSA and Beckett grades.",
+            "mimeType": "application/json",
             "accepts": {
                 "scheme": "exact",
                 "payTo": PAYMENT_ADDRESS,
@@ -303,7 +304,9 @@ try:
                 "network": NETWORK,
             },
             "extensions": declare_discovery_extension(
+                input={"image_url": "https://example.com/charizard.jpg", "game": "Pokemon"},
                 input_schema={
+                    "type": "object",
                     "properties": {
                         "image_url": {"type": "string", "description": "URL or direct path to the physical card image"},
                         "game": {"type": "string", "description": "Ecosystem context, e.g. 'Pokemon' or 'Magic'"}
@@ -311,12 +314,23 @@ try:
                     "required": ["image_url"]
                 },
                 output=OutputConfig(
-                    example={"status": "ok", "tool": "grade_card", "price": "$0.10", "data": {"overall_grade": 9.0}}
+                    example={"status": "ok", "tool": "grade_card", "price": "$0.10", "data": {"overall_grade": 9.0}},
+                    schema={
+                        "type": "object",
+                        "properties": {
+                            "status": {"type": "string"},
+                            "tool": {"type": "string"},
+                            "price": {"type": "string"},
+                            "data": {"type": "object"}
+                        },
+                        "required": ["status"]
+                    }
                 )
             )
         },
         "GET /api/v1/simulate": {
             "description": "Stochastic finance Monte Carlo price simulations (Heston, Merton, Kou) for tokenized real-world assets and physical trading cards.",
+            "mimeType": "application/json",
             "accepts": {
                 "scheme": "exact",
                 "payTo": PAYMENT_ADDRESS,
@@ -324,7 +338,9 @@ try:
                 "network": NETWORK,
             },
             "extensions": declare_discovery_extension(
+                input={"card_name": "Charizard", "current_price": 350.0},
                 input_schema={
+                    "type": "object",
                     "properties": {
                         "card_name": {"type": "string", "description": "Name of the collectible to forecast"},
                         "current_price": {"type": "number", "description": "Current USD market baseline"},
@@ -335,12 +351,21 @@ try:
                     "required": ["card_name", "current_price"]
                 },
                 output=OutputConfig(
-                    example={"status": "ok", "forecast": {"50th_percentile": 224.50, "95th_percentile": 412.10}}
+                    example={"status": "ok", "forecast": {"50th_percentile": 224.50, "95th_percentile": 412.10}},
+                    schema={
+                        "type": "object",
+                        "properties": {
+                            "status": {"type": "string"},
+                            "forecast": {"type": "object"}
+                        },
+                        "required": ["status"]
+                    }
                 )
             )
         },
         "GET /api/v1/crypto-oracle": {
             "description": "Shroomy Web3 Oracle: Fetches real-time NFT/Crypto floor prices via Alchemy and performs Monte Carlo stochastic simulations for institutional forecasting.",
+            "mimeType": "application/json",
             "accepts": {
                 "scheme": "exact",
                 "payTo": PAYMENT_ADDRESS,
@@ -348,7 +373,9 @@ try:
                 "network": NETWORK,
             },
             "extensions": declare_discovery_extension(
+                input={"contract_address": "0xbc4ca0eda7647a8ab7c2061c2e118a18a936f13d"},
                 input_schema={
+                    "type": "object",
                     "properties": {
                         "contract_address": {"type": "string", "description": "The ERC-721 or ERC-1155 contract address to analyze"},
                         "network": {"type": "string", "description": "The blockchain network, default is eth-mainnet"},
@@ -357,12 +384,14 @@ try:
                     "required": ["contract_address"]
                 },
                 output=OutputConfig(
-                    example={"status": "ok", "floor_price": 0.45, "model_params": {"drift": 0.15, "vol_of_vol": 0.85}, "forecast": {"50th_percentile": 0.52, "95th_percentile": 1.10}}
+                    example={"status": "ok", "floor_price": 0.45, "model_params": {"drift": 0.15, "vol_of_vol": 0.85}, "forecast": {"50th_percentile": 0.52, "95th_percentile": 1.10}},
+                    schema={"type": "object", "properties": {"status": {"type": "string"}, "floor_price": {"type": "number"}, "model_params": {"type": "object"}, "forecast": {"type": "object"}}, "required": ["status"]}
                 )
             )
         },
         "GET /api/v1/coin-history": {
             "description": "Historical Token Simulator: Fetches OHLC (Open, High, Low, Close) token data from CoinGecko and applies Monte Carlo Heston simulation to project future trajectories.",
+            "mimeType": "application/json",
             "accepts": {
                 "scheme": "exact",
                 "payTo": PAYMENT_ADDRESS,
@@ -370,7 +399,9 @@ try:
                 "network": NETWORK,
             },
             "extensions": declare_discovery_extension(
+                input={"coin_id": "ethereum"},
                 input_schema={
+                    "type": "object",
                     "properties": {
                         "coin_id": {"type": "string", "description": "CoinGecko coin ID (e.g., 'ethereum', 'bitcoin', 'solana')"},
                         "days": {"type": "integer", "description": "Forecast horizon and historical context lookup window in days"}
@@ -378,12 +409,14 @@ try:
                     "required": ["coin_id"]
                 },
                 output=OutputConfig(
-                    example={"status": "ok", "current_price": 63000.5, "model_params": {"drift": 0.08, "vol_of_vol": 0.65}, "forecast": {"50th_percentile": 67000.1, "95th_percentile": 85000.3}}
+                    example={"status": "ok", "current_price": 63000.5, "model_params": {"drift": 0.08, "vol_of_vol": 0.65}, "forecast": {"50th_percentile": 67000.1, "95th_percentile": 85000.3}},
+                    schema={"type": "object", "properties": {"status": {"type": "string"}, "current_price": {"type": "number"}, "model_params": {"type": "object"}, "forecast": {"type": "object"}}, "required": ["status"]}
                 )
             )
         },
         "GET /api/v1/arb-cross": {
             "description": "Cross-Platform Arbitrage Scanner: Polymarket vs Kalshi price discrepancies via Gen3 NLI.",
+            "mimeType": "application/json",
             "accepts": {
                 "scheme": "exact",
                 "payTo": PAYMENT_ADDRESS,
@@ -391,18 +424,22 @@ try:
                 "network": NETWORK,
             },
             "extensions": declare_discovery_extension(
+                input={"min_edge": 3.0},
                 input_schema={
+                    "type": "object",
                     "properties": {
                         "min_edge": {"type": "number", "description": "Minimum edge percentage (default 3.0)"}
                     }
                 },
                 output=OutputConfig(
-                    example={"status": "ok", "scan_type": "cross-platform", "opportunities": [{"market1": "Kalshi", "market2": "Polymarket", "edge_percent": 6.8}]}
+                    example={"status": "ok", "scan_type": "cross-platform", "opportunities": [{"market1": "Kalshi", "market2": "Polymarket", "edge_percent": 6.8}]},
+                    schema={"type": "object", "properties": {"status": {"type": "string"}, "scan_type": {"type": "string"}, "opportunities": {"type": "array"}}, "required": ["status"]}
                 )
             )
         },
         "GET /api/v1/arb-basket": {
             "description": "Basket Arbitrage Scanner: Multi-outcome aggregation where buying all NO outcomes guarantees profit.",
+            "mimeType": "application/json",
             "accepts": {
                 "scheme": "exact",
                 "payTo": PAYMENT_ADDRESS,
@@ -410,16 +447,20 @@ try:
                 "network": NETWORK,
             },
             "extensions": declare_discovery_extension(
+                input={},
                 input_schema={
+                    "type": "object",
                     "properties": {}
                 },
                 output=OutputConfig(
-                    example={"status": "ok", "scan_type": "basket", "opportunities": [{"event": "Who will win?", "total_no_cost": 6.42, "guaranteed_payout": 7.0}]}
+                    example={"status": "ok", "scan_type": "basket", "opportunities": [{"event": "Who will win?", "total_no_cost": 6.42, "guaranteed_payout": 7.0}]},
+                    schema={"type": "object", "properties": {"status": {"type": "string"}, "scan_type": {"type": "string"}, "opportunities": {"type": "array"}}, "required": ["status"]}
                 )
             )
         },
         "GET /api/v1/arb-weather": {
             "description": "Weather Edge Scanner: NWS forecast vs Kalshi temperature derivatives.",
+            "mimeType": "application/json",
             "accepts": {
                 "scheme": "exact",
                 "payTo": PAYMENT_ADDRESS,
@@ -427,11 +468,14 @@ try:
                 "network": NETWORK,
             },
             "extensions": declare_discovery_extension(
+                input={},
                 input_schema={
+                    "type": "object",
                     "properties": {}
                 },
                 output=OutputConfig(
-                    example={"status": "ok", "scan_type": "weather", "opportunities": [{"city": "Miami, FL", "edge": 0.12}]}
+                    example={"status": "ok", "scan_type": "weather", "opportunities": [{"city": "Miami, FL", "edge": 0.12}]},
+                    schema={"type": "object", "properties": {"status": {"type": "string"}, "scan_type": {"type": "string"}, "opportunities": {"type": "array"}}, "required": ["status"]}
                 )
             )
         },
