@@ -12,15 +12,26 @@ Built on the Coinbase Developer Platform's Bazaar Discovery protocol, this serve
 
 | Endpoint | Price (USDC) | Function |
 |----------|-------------|----------|
-| `GET /api/v1/grade` | **$0.10** | Multimodal vision grading (predicts PSA / Beckett scores) |
-| `GET /api/v1/crypto-oracle` | **$0.05** | Shroomy Web3 Oracle — NFT floor pricing via Alchemy + Heston Monte Carlo |
-| `GET /api/v1/coin-history` | **$0.05** | Historical Token Simulator — CoinGecko real-time token prices + Heston Monte Carlo |
-| `GET /api/v1/arb-cross` | **$1.00** | Cross-Platform Arb Scanner — Polymarket vs Kalshi price discrepancies via Gen3 NLI |
-| `GET /api/v1/arb-basket` | **$0.50** | Basket Arb Scanner — Multi-outcome aggregator finding guaranteed risk-free NO yields |
-| `GET /api/v1/arb-weather` | **$0.25** | Weather Edge Scanner — Real-time NWS forecast divergence against Kalshi |
-| `GET /api/v1/simulate` | **$0.015** | TCG Monte Carlo forecasting (Heston, Merton, Kou stochastic models) |
-| `GET /api/v1/search` | **Free** | TCGPlayer ID lookup & product metadata mapping |
+| `GET /api/v1/grade` | **$0.10** | 3-stage AI card grading: Vision LLM + OpenCV centering + BGS capping |
+| `GET /api/v1/grade-or-not` | **$0.10** | Grade-or-Not Decision Engine — "will grading this card make me money?" |
+| `GET /api/v1/simulate` | **$0.015** | Monte Carlo price forecasting (Heston, Merton, Kou stochastic models) |
+| `GET /api/v1/trending` | **$0.025** | Trending Cards Feed — top movers by sales volume and price velocity |
+| `GET /api/v1/arb-grade` | **$0.15** | Raw Card Arbitrage Scanner — finds cards where grading ROI exceeds threshold |
+| `GET /api/v1/portfolio-optimize` | **$0.50** | Markowitz mean-variance portfolio optimization with Kou jump-diffusion |
+| `GET /api/v1/crypto-oracle` | **$0.05** | NFT floor price oracle — Alchemy + Heston Monte Carlo |
+| `GET /api/v1/coin-history` | **$0.05** | CoinGecko OHLC token data + Heston Monte Carlo forecasting |
+| `GET /api/v1/arb-cross` | **$1.00** | Cross-Platform Arb Scanner — Polymarket vs Kalshi via Gen3 NLI |
+| `GET /api/v1/arb-basket` | **$0.50** | Basket Arb Scanner — guaranteed-profit NO yield aggregator |
+| `GET /api/v1/arb-weather` | **$0.25** | Weather Edge Scanner — NWS forecasts vs Kalshi temperature derivatives |
+| `GET /api/v1/search` | **Free** | TCGPlayer ID lookup & product metadata |
 | `GET /api/v1/market` | **Free** | Price distributions & liquidity metrics |
+| `GET /api/v1/accuracy` | **Free** | Public accuracy dashboard — MAE, hit rates, grade distribution |
+| `POST /api/v1/accuracy/report` | **Free** | Report your actual PSA/BGS grade vs our prediction |
+| `POST /api/v1/batch-triage` | **$0.50** | Batch Card Triage — grade up to 20 cards, ranked by expected profit |
+| `POST /api/v1/alerts/subscribe` | **Free** | Subscribe to a price alert — webhook fires when price crosses threshold |
+| `GET /api/v1/alerts` | **Free** | List active price alerts |
+| `DELETE /api/v1/alerts/{id}` | **Free** | Unsubscribe from a price alert |
+| `POST /api/v1/alerts/check` | **Free** | Manually trigger alert check cycle against current prices |
 
 ### 🔍 Full Model Transparency
 
@@ -53,7 +64,7 @@ This allows downstream agents to validate assumptions, compare drift parameters 
 **Prerequisites:** Python 3.11+, and a funded Coinbase Developer Platform wallet.
 
 ```bash
-git clone https://gitlab.com/meme-merchants/undesirables-x402-server.git
+git clone https://github.com/sailorpepe/undesirables-x402-server.git
 cd undesirables-x402-server
 
 python3 -m venv venv
