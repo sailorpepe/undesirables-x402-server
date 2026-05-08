@@ -1650,6 +1650,10 @@ async def grade_card(
     
     Returns `402 Payment Required` — sign USDC payment on Base to access.
     """
+    # Validate image URL
+    if image_url.startswith("http") and not _is_safe_url(image_url):
+        raise HTTPException(status_code=400, detail="Image URL must resolve to a public IP address")
+
     result = call_mcp_tool("grade_card", {"image_path": image_url, "game": game})
 
     if "error" in result:
@@ -3015,6 +3019,13 @@ async def batch_triage(
         raise HTTPException(status_code=400, detail="No image URLs provided")
     if len(urls) > 20:
         raise HTTPException(status_code=400, detail="Maximum 20 card images per batch")
+
+    # Validate all URLs before processing
+    for url in urls:
+        if not url.startswith("https://"):
+            raise HTTPException(status_code=400, detail=f"All image URLs must use HTTPS: {url[:80]}")
+        if not _is_safe_url(url):
+            raise HTTPException(status_code=400, detail=f"Image URL must resolve to a public IP: {url[:80]}")
 
     results = []
 
