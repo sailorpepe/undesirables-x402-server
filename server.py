@@ -831,65 +831,107 @@ async def agent_card():
         "description": (
             "AI-powered TCG card grading, Monte Carlo price simulation, "
             "and market intelligence. 370K+ products across 25 games. "
-            "Pay-per-call via x402 USDC on Base."
+            "28 API endpoints. Pay-per-call via x402 USDC on Base."
         ),
-        "url": os.getenv("X402_PUBLIC_URL", "https://methods-supplier-foundation-stuck.trycloudflare.com"),
-        "version": "1.0.0",
-        "capabilities": {"streaming": False, "pushNotifications": False},
+        "url": os.getenv("X402_PUBLIC_URL", "https://oracle.the-undesirables.com"),
+        "version": "2.0.0",
+        "capabilities": {"streaming": False, "pushNotifications": True},
         "skills": [
             {
                 "id": "search_tcg",
                 "name": "Search TCG Products",
-                "description": "Search 370,158 TCG products across 25 games",
+                "description": "Search 370,158 TCG products across 25 games. Free.",
                 "tags": ["tcg", "pokemon", "search", "free"],
             },
             {
                 "id": "market_data",
                 "name": "Market Data",
-                "description": "Daily TCGCSV market snapshots with top movers",
+                "description": "Daily TCGCSV market snapshots with top movers. Free.",
                 "tags": ["market", "prices", "free"],
             },
             {
                 "id": "grade_card",
                 "name": "AI Card Grading",
-                "description": "Grade a TCG card image — $0.10 USDC per call",
+                "description": "3-stage grade pipeline: Vision LLM + OpenCV centering + BGS capping. Includes free ROI verdict. $0.10 USDC.",
                 "tags": ["grading", "vision", "ai", "paid"],
+            },
+            {
+                "id": "grade_or_not",
+                "name": "Grade-or-Not Decision Engine",
+                "description": "ROI analysis: PSA fee schedule × grade prediction × graded market value. Returns GO/NO-GO verdict with profit scenarios. $0.10 USDC.",
+                "tags": ["grading", "roi", "decision", "paid"],
             },
             {
                 "id": "simulate_price",
                 "name": "Monte Carlo Simulation",
-                "description": "Heston/Merton/Kou price models — $0.015 USDC",
+                "description": "Heston/Merton/Kou stochastic price models with full parameter transparency. $0.015 USDC.",
                 "tags": ["simulation", "monte-carlo", "finance", "paid"],
+            },
+            {
+                "id": "trending",
+                "name": "Trending Cards Feed",
+                "description": "Top 50 cards by 30-day sales volume and price velocity. $0.025 USDC.",
+                "tags": ["trending", "market", "volume", "paid"],
+            },
+            {
+                "id": "arb_grade",
+                "name": "Raw Card Arbitrage Scanner",
+                "description": "Finds cards where grading ROI exceeds threshold. $0.15 USDC.",
+                "tags": ["arbitrage", "grading", "roi", "paid"],
+            },
+            {
+                "id": "batch_triage",
+                "name": "Batch Card Triage",
+                "description": "Grade up to 20 card images and rank by expected profit. $0.50 USDC.",
+                "tags": ["batch", "grading", "triage", "paid"],
+            },
+            {
+                "id": "portfolio_optimize",
+                "name": "Portfolio Optimizer",
+                "description": "Markowitz mean-variance with Kou jump-diffusion Monte Carlo. $0.50 USDC.",
+                "tags": ["portfolio", "optimization", "finance", "paid"],
             },
             {
                 "id": "crypto_oracle",
                 "name": "Shroomy Web3 Oracle",
-                "description": "Alchemy NFT floor pricing + Monte Carlo — $0.05 USDC",
+                "description": "Alchemy NFT floor pricing + Monte Carlo forecasting. $0.05 USDC.",
                 "tags": ["web3", "nft", "alchemy", "oracle", "paid"],
             },
             {
                 "id": "coin_history",
                 "name": "Historical Token Simulator",
-                "description": "CoinGecko Historical pricing + Monte Carlo — $0.05 USDC",
-                "tags": ["crypto", "coingecko", "token", "history", "oracle", "paid"],
+                "description": "CoinGecko historical pricing + Monte Carlo forecasting. $0.05 USDC.",
+                "tags": ["crypto", "coingecko", "token", "history", "paid"],
             },
             {
                 "id": "arb_cross",
                 "name": "Cross-Platform Arb Scanner",
-                "description": "Kalshi vs Polymarket NLI Discrepancies — $1.00 USDC",
-                "tags": ["arbitrage", "prediction-markets", "paid", "alpha"],
+                "description": "Kalshi vs Polymarket NLI discrepancies. $1.00 USDC.",
+                "tags": ["arbitrage", "prediction-markets", "paid"],
             },
             {
                 "id": "arb_basket",
                 "name": "Basket Arb Scanner",
-                "description": "Multi-outcome guaranteed NO aggregation — $0.50 USDC",
-                "tags": ["arbitrage", "prediction-markets", "paid", "alpha"],
+                "description": "Multi-outcome guaranteed NO aggregation. $0.50 USDC.",
+                "tags": ["arbitrage", "prediction-markets", "paid"],
             },
             {
                 "id": "arb_weather",
                 "name": "Weather Arb Scanner",
-                "description": "NWS vs Kalshi Temperature edges — $0.25 USDC",
-                "tags": ["arbitrage", "weather", "kalshi", "paid", "alpha"],
+                "description": "NWS vs Kalshi temperature derivatives. $0.25 USDC.",
+                "tags": ["arbitrage", "weather", "kalshi", "paid"],
+            },
+            {
+                "id": "accuracy_dashboard",
+                "name": "Prediction Accuracy Dashboard",
+                "description": "Public MAE, hit rates, and grade distribution. Free.",
+                "tags": ["accuracy", "trust", "transparency", "free"],
+            },
+            {
+                "id": "price_alerts",
+                "name": "Price Alert Webhooks",
+                "description": "Subscribe to webhook notifications when card prices cross thresholds. Free.",
+                "tags": ["alerts", "webhooks", "monitoring", "free"],
             },
         ],
         "payment": {
@@ -959,6 +1001,7 @@ ACCURACY_DB = Path(__file__).parent / "accuracy.sqlite"
 def _init_accuracy_db():
     """Create the grade_predictions table if it doesn't exist."""
     db = sqlite3.connect(str(ACCURACY_DB))
+    db.execute("PRAGMA journal_mode=WAL")
     db.execute("""
         CREATE TABLE IF NOT EXISTS grade_predictions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1146,9 +1189,27 @@ async def accuracy_dashboard(
 ALERTS_DB = Path(__file__).parent / "alerts.sqlite"
 
 
+def _is_safe_url(url: str) -> bool:
+    """Block SSRF: reject private/reserved IP ranges in webhook URLs."""
+    from urllib.parse import urlparse
+    import socket
+    try:
+        parsed = urlparse(url)
+        hostname = parsed.hostname
+        if not hostname:
+            return False
+        ip = socket.gethostbyname(hostname)
+        import ipaddress
+        addr = ipaddress.ip_address(ip)
+        return not (addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved)
+    except Exception:
+        return False
+
+
 def _init_alerts_db():
     """Create the price_alerts table if it doesn't exist."""
     db = sqlite3.connect(str(ALERTS_DB))
+    db.execute("PRAGMA journal_mode=WAL")
     db.execute("""
         CREATE TABLE IF NOT EXISTS price_alerts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1203,6 +1264,8 @@ async def subscribe_alert(
         raise HTTPException(status_code=400, detail="threshold_usd must be positive")
     if not webhook_url.startswith("http"):
         raise HTTPException(status_code=400, detail="webhook_url must be a valid HTTP(S) URL")
+    if not _is_safe_url(webhook_url):
+        raise HTTPException(status_code=400, detail="webhook_url must resolve to a public IP address")
 
     db = sqlite3.connect(str(ALERTS_DB))
     count = db.execute(
