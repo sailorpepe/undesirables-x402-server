@@ -754,23 +754,46 @@ except Exception as e:
 async def root():
     """Server info and available endpoints."""
     return {
-        "name": "The Undesirables — AI Tools API",
-        "version": "1.0.0",
+        "name": "TCG Oracle — Financial Intelligence for Collectibles",
+        "tagline": "Monte Carlo forecasting, AI grading, and market intelligence for 370K+ trading cards across 25 games",
+        "version": "2.0.0",
         "x402_enabled": X402_ENABLED,
+        "total_endpoints": 28,
         "payment_address": PAYMENT_ADDRESS,
         "network": NETWORK,
         "endpoints": {
             "free": [
-                {"path": "/api/v1/search", "description": "Search 370K+ TCG products"},
-                {"path": "/api/v1/market", "description": "Daily market snapshot"},
+                {"path": "/api/v1/search", "description": "Search 370K+ TCG products across 25 games"},
+                {"path": "/api/v1/market", "description": "Daily market snapshot with top movers"},
+                {"path": "/api/v1/accuracy", "description": "Public prediction accuracy dashboard (MAE, hit rates)"},
+                {"path": "/api/v1/accuracy/report", "method": "POST", "description": "Report actual grade vs prediction"},
+                {"path": "/api/v1/alerts/subscribe", "method": "POST", "description": "Subscribe to price alert webhooks"},
+                {"path": "/api/v1/alerts", "description": "List active price alerts"},
+                {"path": "/api/v1/alerts/{id}", "method": "DELETE", "description": "Unsubscribe from alert"},
+                {"path": "/api/v1/alerts/check", "method": "POST", "description": "Trigger alert check cycle"},
+                {"path": "/api/v1/recommend", "method": "POST", "description": "AI workflow advisor — tells you which endpoints to call and in what order"},
             ],
             "paid": [
-                {"path": "/api/v1/grade", "price": "$0.10", "description": "AI card grading (PSA/Beckett)"},
-                {"path": "/api/v1/simulate", "price": "$0.015", "description": "Monte Carlo price simulation"},
+                {"path": "/api/v1/grade", "price": "$0.10", "description": "3-stage AI card grading (Vision + OpenCV + BGS capping) with ROI verdict"},
+                {"path": "/api/v1/grade-or-not", "price": "$0.10", "description": "Grade-or-Not ROI engine — should I grade this card?"},
+                {"path": "/api/v1/simulate", "price": "$0.015", "description": "Monte Carlo price forecasting (Heston/Merton/Kou)"},
+                {"path": "/api/v1/trending", "price": "$0.025", "description": "Top movers by sales volume and price velocity"},
+                {"path": "/api/v1/arb-grade", "price": "$0.15", "description": "Raw card arbitrage scanner — finds grading ROI opportunities"},
+                {"path": "/api/v1/batch-triage", "price": "$0.50", "method": "POST", "description": "Grade up to 20 cards, ranked by expected profit"},
+                {"path": "/api/v1/portfolio-optimize", "price": "$0.50", "description": "Markowitz portfolio optimization with Kou jump-diffusion"},
+                {"path": "/api/v1/crypto-oracle", "price": "$0.05", "description": "NFT floor price oracle + Monte Carlo"},
+                {"path": "/api/v1/coin-history", "price": "$0.05", "description": "CoinGecko OHLC + Monte Carlo forecasting"},
+                {"path": "/api/v1/arb-cross", "price": "$1.00", "description": "Cross-platform prediction market arbitrage"},
+                {"path": "/api/v1/arb-basket", "price": "$0.50", "description": "Basket arbitrage — guaranteed NO yield aggregator"},
+                {"path": "/api/v1/arb-weather", "price": "$0.25", "description": "Weather edge scanner — NWS vs Kalshi"},
             ],
         },
-        "docs": f"http://localhost:{PORT}/docs",
-        "website": "https://the-undesirables.com",
+        "discovery": {
+            "agent_card": "/.well-known/agent.json",
+            "openapi": "/openapi.json",
+            "docs": "/docs",
+        },
+        "website": "https://the-undesirables.vercel.app",
     }
 
 
@@ -788,24 +811,31 @@ async def ai_plugin():
     """Bitte Protocol / OpenAI plugin manifest for agent discovery."""
     return {
         "schema_version": "v1",
-        "name_for_human": "The Undesirables TCG Oracle",
+        "name_for_human": "TCG Oracle — Financial Intelligence for Collectibles",
         "name_for_model": "tcg_oracle",
         "description_for_human": (
-            "AI-powered TCG card grading, Monte Carlo price simulation, "
-            "and market data across 370K+ products and 25 card games."
+            "Financial intelligence API for trading card collectors. "
+            "AI grading, Monte Carlo price forecasting, ROI analysis, "
+            "arbitrage detection, and portfolio optimization across "
+            "370K+ products and 25 card games."
         ),
         "description_for_model": (
-            "Search TCG products, grade trading cards using AI vision "
-            "(PSA/Beckett predictions), and run Monte Carlo price simulations "
-            "with Heston/Merton/Kou stochastic models. Endpoints accept x402 "
-            "USDC micropayments on Base for paid tools. Free search and market "
-            "data available without payment."
+            "TCG Oracle provides financial intelligence for collectible trading cards. "
+            "Use this when you need to: (1) grade a card image to predict PSA/Beckett scores, "
+            "(2) forecast future card prices using Monte Carlo simulation, "
+            "(3) decide if grading a card is profitable (grade-or-not ROI engine), "
+            "(4) find undervalued cards where grading produces high ROI, "
+            "(5) optimize a card portfolio for risk-adjusted returns, "
+            "(6) monitor trending cards by sales volume and price velocity, "
+            "(7) batch-grade multiple cards and rank by profit potential. "
+            "All paid endpoints use x402 USDC micropayments on Base. "
+            "Free search, market data, accuracy dashboard, and price alerts available without payment."
         ),
         "auth": {"type": "none"},
         "api": {"type": "openapi", "url": "/openapi.json"},
-        "logo_url": "https://the-undesirables.com/logo.png",
+        "logo_url": "https://the-undesirables.vercel.app/logo.png",
         "contact_email": "sailorpepe@proton.me",
-        "legal_info_url": "https://the-undesirables.com",
+        "legal_info_url": "https://the-undesirables.vercel.app/privacy",
         "x402": {
             "enabled": True,
             "network": NETWORK,
@@ -816,8 +846,21 @@ async def ai_plugin():
             "pricing": {
                 "/api/v1/search": "free",
                 "/api/v1/market": "free",
+                "/api/v1/accuracy": "free",
+                "/api/v1/alerts/subscribe": "free",
+                "/api/v1/recommend": "free",
                 "/api/v1/grade": "$0.10",
+                "/api/v1/grade-or-not": "$0.10",
                 "/api/v1/simulate": "$0.015",
+                "/api/v1/trending": "$0.025",
+                "/api/v1/arb-grade": "$0.15",
+                "/api/v1/batch-triage": "$0.50",
+                "/api/v1/portfolio-optimize": "$0.50",
+                "/api/v1/crypto-oracle": "$0.05",
+                "/api/v1/coin-history": "$0.05",
+                "/api/v1/arb-cross": "$1.00",
+                "/api/v1/arb-basket": "$0.50",
+                "/api/v1/arb-weather": "$0.25",
             },
         },
     }
@@ -940,6 +983,148 @@ async def agent_card():
             "asset": "USDC",
             "wallet": PAYMENT_ADDRESS,
         },
+    }
+
+
+# ---------------------------------------------------------------------------
+# META-TOOL — Self-navigating API advisor
+# ---------------------------------------------------------------------------
+WORKFLOW_CATALOG = {
+    "grade_single_card": {
+        "name": "Grade a single card",
+        "triggers": ["grade", "grading", "condition", "psa", "beckett", "centering", "corners", "edges", "surface"],
+        "steps": [
+            {"endpoint": "/api/v1/search", "price": "free", "purpose": "Find the card's TCGPlayer product ID and current market price"},
+            {"endpoint": "/api/v1/grade", "price": "$0.10", "purpose": "AI-grade the card image (Vision + OpenCV + BGS capping)"},
+        ],
+        "total_cost": "$0.10",
+    },
+    "should_i_grade": {
+        "name": "Decide if grading is worth it",
+        "triggers": ["worth grading", "should i grade", "roi", "profitable", "grade or not", "make money"],
+        "steps": [
+            {"endpoint": "/api/v1/search", "price": "free", "purpose": "Look up raw card price"},
+            {"endpoint": "/api/v1/grade-or-not", "price": "$0.10", "purpose": "Calculate grading ROI with PSA fee schedule"},
+        ],
+        "total_cost": "$0.10",
+    },
+    "find_arbitrage": {
+        "name": "Find undervalued cards to grade for profit",
+        "triggers": ["arbitrage", "undervalued", "flip", "buy low", "cheap cards", "profit", "find deals"],
+        "steps": [
+            {"endpoint": "/api/v1/arb-grade", "price": "$0.15", "purpose": "Scan database for raw cards with high grading ROI"},
+            {"endpoint": "/api/v1/trending", "price": "$0.025", "purpose": "Cross-reference with market momentum"},
+        ],
+        "total_cost": "$0.175",
+    },
+    "price_forecast": {
+        "name": "Predict future card price",
+        "triggers": ["forecast", "predict", "future price", "monte carlo", "simulation", "will it go up", "price prediction"],
+        "steps": [
+            {"endpoint": "/api/v1/search", "price": "free", "purpose": "Get current price baseline"},
+            {"endpoint": "/api/v1/simulate", "price": "$0.015", "purpose": "Run Monte Carlo simulation (Heston/Merton/Kou)"},
+        ],
+        "total_cost": "$0.015",
+    },
+    "evaluate_collection": {
+        "name": "Evaluate a collection of cards",
+        "triggers": ["collection", "batch", "bulk", "multiple cards", "20 cards", "triage", "which ones", "sort by profit"],
+        "steps": [
+            {"endpoint": "/api/v1/batch-triage", "price": "$0.50", "purpose": "Grade all cards and rank by expected profit"},
+            {"endpoint": "/api/v1/portfolio-optimize", "price": "$0.50", "purpose": "Optimize allocation across your best cards"},
+        ],
+        "total_cost": "$1.00",
+    },
+    "build_portfolio": {
+        "name": "Optimize a card portfolio",
+        "triggers": ["portfolio", "diversify", "allocation", "sharpe", "risk", "invest", "budget"],
+        "steps": [
+            {"endpoint": "/api/v1/search", "price": "free", "purpose": "Look up current prices for each card"},
+            {"endpoint": "/api/v1/portfolio-optimize", "price": "$0.50", "purpose": "Markowitz optimization with Kou jump-diffusion"},
+        ],
+        "total_cost": "$0.50",
+    },
+    "monitor_prices": {
+        "name": "Set up price monitoring",
+        "triggers": ["alert", "monitor", "notify", "watch", "webhook", "price drop", "price spike"],
+        "steps": [
+            {"endpoint": "/api/v1/search", "price": "free", "purpose": "Find the exact card product"},
+            {"endpoint": "/api/v1/alerts/subscribe", "price": "free", "purpose": "Subscribe to price threshold webhook"},
+        ],
+        "total_cost": "free",
+    },
+    "market_overview": {
+        "name": "Get market overview",
+        "triggers": ["market", "trending", "hot", "popular", "what's moving", "top cards", "volume"],
+        "steps": [
+            {"endpoint": "/api/v1/market", "price": "free", "purpose": "Daily market snapshot with top movers"},
+            {"endpoint": "/api/v1/trending", "price": "$0.025", "purpose": "Top 50 cards by sales volume and velocity"},
+        ],
+        "total_cost": "$0.025",
+    },
+}
+
+
+@app.post("/api/v1/recommend", tags=["Free"])
+@limiter.limit("30/minute")
+async def recommend_workflow(
+    request: Request,
+    goal: str = Query(..., description="What do you want to accomplish? Natural language description."),
+):
+    """
+    🆓 **FREE** — AI Workflow Advisor.
+
+    Describe your goal in natural language and get a recommended sequence of
+    API calls to accomplish it. This endpoint makes the API self-navigating
+    for autonomous agents.
+
+    Example goals:
+    - "I have 50 raw Pokémon cards and $500 budget, what should I do?"
+    - "Is this Charizard worth grading?"
+    - "Find me undervalued cards to flip"
+    - "Predict the price of a Black Lotus in 90 days"
+    """
+    goal_lower = goal.lower()
+
+    # Score each workflow by keyword matches
+    scored = []
+    for wf_id, wf in WORKFLOW_CATALOG.items():
+        score = sum(1 for trigger in wf["triggers"] if trigger in goal_lower)
+        if score > 0:
+            scored.append((score, wf_id, wf))
+
+    scored.sort(reverse=True, key=lambda x: x[0])
+
+    if not scored:
+        # Default recommendation
+        return {
+            "status": "ok",
+            "goal": goal,
+            "recommendation": "I couldn't match a specific workflow. Here are the most common starting points:",
+            "suggested_workflows": [
+                {"workflow": "grade_single_card", "start_with": "/api/v1/search", "description": "Grade a card — start by searching for it"},
+                {"workflow": "market_overview", "start_with": "/api/v1/market", "description": "See what's trending in the market"},
+                {"workflow": "find_arbitrage", "start_with": "/api/v1/arb-grade", "description": "Find undervalued cards to flip"},
+            ],
+            "all_workflows": list(WORKFLOW_CATALOG.keys()),
+        }
+
+    # Return top matches
+    recommendations = []
+    for score, wf_id, wf in scored[:3]:
+        recommendations.append({
+            "workflow_id": wf_id,
+            "name": wf["name"],
+            "confidence": round(score / len(wf["triggers"]), 2),
+            "total_cost": wf["total_cost"],
+            "steps": wf["steps"],
+        })
+
+    return {
+        "status": "ok",
+        "goal": goal,
+        "top_recommendation": recommendations[0],
+        "alternatives": recommendations[1:] if len(recommendations) > 1 else [],
     }
 
 
