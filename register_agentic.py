@@ -6,6 +6,8 @@ a full x402 handshake. By completing real settlements, the Coinbase/CDP
 Facilitator ingests the `declare_discovery_extension` metadata, which
 gets the tools listed on https://agentic.market.
 
+x402 SDK v2.10+ — uses ExactEvmScheme with automatic 402 handling.
+
 Usage:
   1. Set BUYER_PRIVATE_KEY in your .env (a funded Base wallet)
   2. Run: python3 register_agentic.py
@@ -21,63 +23,75 @@ load_dotenv()
 
 from x402 import x402Client
 from x402.mechanisms.evm import EthAccountSigner
-from x402.mechanisms.evm.exact.register import register_exact_evm_client
-from x402.http.core import parse_payment_required, get_payment_required_from_headers
+from x402.mechanisms.evm.exact import ExactEvmScheme
 
-# All paid endpoints — update this list when adding new routes
+# All paid endpoints that return 402 — verified May 20, 2026
 ENDPOINTS = [
-    "https://oracle.the-undesirables.com/api/v1/simulate",
-    "https://oracle.the-undesirables.com/api/v1/grade",
-    "https://oracle.the-undesirables.com/api/v1/crypto-oracle",
-    "https://oracle.the-undesirables.com/api/v1/coin-history",
-    "https://oracle.the-undesirables.com/api/v1/arb-cross",
-    "https://oracle.the-undesirables.com/api/v1/arb-basket",
-    "https://oracle.the-undesirables.com/api/v1/arb-weather",
-    "https://oracle.the-undesirables.com/api/v1/portfolio-optimize",
-    "https://oracle.the-undesirables.com/api/v1/grade-or-not",
-    "https://oracle.the-undesirables.com/api/v1/arb-grade",
-    "https://oracle.the-undesirables.com/api/v1/trending",
-    "https://oracle.the-undesirables.com/api/v1/batch-triage",
+    {
+        "url": "https://oracle.the-undesirables.com/api/v1/simulate",
+        "params": {"card_name": "Charizard", "current_price": 350, "days": 30},
+    },
+    {
+        "url": "https://oracle.the-undesirables.com/api/v1/grade",
+        "params": {"card_name": "Charizard Base Set"},
+    },
+    {
+        "url": "https://oracle.the-undesirables.com/api/v1/crypto-oracle",
+        "params": {"query": "What is ETH price prediction?"},
+    },
+    {
+        "url": "https://oracle.the-undesirables.com/api/v1/coin-history",
+        "params": {"coin": "ethereum", "days": 7},
+    },
+    {
+        "url": "https://oracle.the-undesirables.com/api/v1/arb-cross",
+        "params": {"query": "cross-market arbitrage opportunities"},
+    },
+    {
+        "url": "https://oracle.the-undesirables.com/api/v1/arb-basket",
+        "params": {"query": "basket arbitrage analysis"},
+    },
+    {
+        "url": "https://oracle.the-undesirables.com/api/v1/arb-weather",
+        "params": {"query": "weather derivatives arbitrage"},
+    },
 ]
 
 
-async def register_endpoint(http, client, endpoint):
-    print(f"\n🚀 Registering: {endpoint}")
+async def register_endpoint(client, http, endpoint):
+    url = endpoint["url"]
+    name = url.split("/")[-1]
+    params = endpoint.get("params", {})
+
+    print(f"\n🚀 Registering: {name}")
     try:
-        response_402 = await http.get(endpoint, headers={"user-agent": "httpx"})
+        # Step 1: Hit endpoint to get 402 challenge
+        response_402 = await http.get(url, params=params)
 
         if response_402.status_code != 402:
-            print(f"❌ Expected 402, got {response_402.status_code}. Skipping...")
-            return
+            print(f"   ⚠️  Expected 402, got {response_402.status_code}. Skipping.")
+            return False
 
-        headers_dict = dict(response_402.headers)
-        pr_headers = list(get_payment_required_from_headers(headers_dict))
-        if not pr_headers:
-            print("❌ No 'Payment-Required' header found!")
-            return
+        # Step 2: Extract payment-required header
+        pr_header = response_402.headers.get("payment-required")
+        if not pr_header:
+            print("   ❌ No 'Payment-Required' header found.")
+            return False
 
-        payment_required = parse_payment_required(pr_headers[0])
+        # Step 3: Let the v2.10 client handle the 402 automatically
+        # The client.get() method intercepts 402, signs, and retries
+        paid_response = await client.get(url, params=params, session=http)
 
-        # CRITICAL: Manually attach extensions that the SDK drops.
-        # This registers it on Agentic Market.
-        payment_payload = await client.create_payment_payload(
-            payment_required,
-            resource=payment_required.resource,
-            extensions=payment_required.extensions,
-        )
+        if paid_response.status_code == 200:
+            print(f"   ✅ Settlement complete! Status: {paid_response.status_code}")
+            return True
+        else:
+            print(f"   ⚠️  Post-payment status: {paid_response.status_code}")
+            return False
 
-        payment_signature = await client.authorize_payment(payment_payload)
-        sig_b64 = payment_signature.to_base64()
-
-        submit_headers = {"Payment-Signature": sig_b64, "user-agent": "httpx"}
-        final_response = await http.get(endpoint, headers=submit_headers)
-
-        print(
-            f"✅ Handshake Complete for {endpoint.split('/')[-1]}! "
-            f"Status Code: {final_response.status_code}"
-        )
     except Exception as e:
-        print(f"❌ Error registering {endpoint}: {e}")
+        print(f"   ❌ Error: {e}")
+        return False
 
 
 async def main():
@@ -89,15 +103,32 @@ async def main():
     if not pk.startswith("0x"):
         pk = "0x" + pk
 
-    client = x402Client()
+    # v2.10 client setup
     account = Account.from_key(pk)
-    register_exact_evm_client(client, EthAccountSigner(account))
+    signer = EthAccountSigner(account)
+    client = x402Client()
+    client.register("eip155:*", ExactEvmScheme(signer=signer))
 
-    print("Starting Agentic.Market (Bazaar) Mass Registration...\n")
+    print(f"Wallet: {account.address}")
+    print(f"Endpoints: {len(ENDPOINTS)}")
+    print("Starting Agentic.Market registration...\n")
+
+    success = 0
+    failed = 0
+
     async with httpx.AsyncClient(timeout=60.0) as http:
         for ep in ENDPOINTS:
-            await register_endpoint(http, client, ep)
+            result = await register_endpoint(client, http, ep)
+            if result:
+                success += 1
+            else:
+                failed += 1
             await asyncio.sleep(2)  # rate limit buffer
+
+    print(f"\n{'═' * 50}")
+    print(f"  Results: {success} registered, {failed} failed")
+    print(f"  Total endpoints: {len(ENDPOINTS)}")
+    print(f"{'═' * 50}")
 
 
 if __name__ == "__main__":
