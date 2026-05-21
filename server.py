@@ -1636,6 +1636,131 @@ async def check_alerts_now(request: Request):
 
 
 
+# ---------------------------------------------------------------------------
+# Monte Carlo Calibration — pulls real market data for simulation params
+# ---------------------------------------------------------------------------
+
+def _get_calibrated_params(card_name: str) -> dict:
+    """
+    Attempt to get calibrated mu/sigma/jump params from the TCG market database.
+    Uses time-scaled weekly returns for statistically sound estimates.
+    Returns None if insufficient data.
+    """
+    import math
+    import statistics
+    from datetime import datetime
+
+    db = _get_db()
+    if not db:
+        return None
+
+    try:
+        # Resolve card
+        row = db.execute(
+            "SELECT product_id, clean_name FROM cards WHERE clean_name LIKE ? OR name LIKE ? LIMIT 1",
+            [f"%{card_name}%", f"%{card_name}%"]
+        ).fetchone()
+        if not row:
+            db.close()
+            return None
+
+        pid = row[0]
+
+        # Get chronological price history with dates
+        history = db.execute(
+            "SELECT date, market_price FROM price_history WHERE product_id = ? "
+            "AND market_price IS NOT NULL AND market_price > 0 ORDER BY date ASC",
+            [pid]
+        ).fetchall()
+
+        # Also check shroomy_stats as fallback
+        if len(history) < 5:
+            shroomy = db.execute(
+                "SELECT drift, volatility, last_price FROM shroomy_stats WHERE product_id = ?",
+                [pid]
+            ).fetchone()
+            db.close()
+            if shroomy and shroomy[1] and shroomy[1] > 0:
+                sigma = shroomy[1] * math.sqrt(365) if shroomy[1] < 1 else shroomy[1]
+                mu = shroomy[0] * 365 if shroomy[0] else 0.03
+                return {
+                    "mu_annual": mu,
+                    "sigma_annual": sigma,
+                    "jump_intensity_lambda": 2.0,
+                    "jump_mean_mu_j": -0.05,
+                    "jump_vol_sigma_j": 0.10,
+                }
+            return None
+
+        db.close()
+
+        # Parse dates and prices
+        dated_prices = []
+        for date_str, price in history:
+            try:
+                dt = datetime.strptime(date_str, "%Y-%m-%d")
+                dated_prices.append((dt, float(price)))
+            except (ValueError, TypeError):
+                continue
+
+        if len(dated_prices) < 5:
+            return None
+
+        # Calculate time-scaled log returns
+        returns = []
+        for i in range(1, len(dated_prices)):
+            delta_days = (dated_prices[i][0] - dated_prices[i-1][0]).days
+            if delta_days <= 0:
+                continue
+            log_return = math.log(dated_prices[i][1] / dated_prices[i-1][1])
+            # Scale to daily equivalent
+            daily_return = log_return / math.sqrt(delta_days)
+            returns.append((log_return, delta_days, daily_return))
+
+        if len(returns) < 3:
+            return None
+
+        daily_returns = [r[2] for r in returns]
+        raw_returns = [r[0] for r in returns]
+
+        # Annualize
+        mu_daily = statistics.mean(daily_returns)
+        sigma_daily = statistics.stdev(daily_returns) if len(daily_returns) > 1 else 0.02
+        mu_annual = mu_daily * 365
+        sigma_annual = sigma_daily * math.sqrt(365)
+
+        # Jump detection: returns beyond 2 sigma
+        threshold = 2.0 * sigma_daily
+        jumps = [r for r in raw_returns if abs(r) > threshold * math.sqrt(max(1, 1))]
+        total_days = (dated_prices[-1][0] - dated_prices[0][0]).days
+        total_years = max(total_days / 365.0, 0.01)
+        lambda_jump = len(jumps) / total_years if total_years > 0 else 2.0
+        lambda_jump = max(0.5, min(lambda_jump, 20.0))  # Clamp to reasonable range
+
+        mu_j = statistics.mean(jumps) if jumps else -0.05
+        sigma_j = statistics.stdev(jumps) if len(jumps) > 1 else 0.10
+
+        # Sanity clamps
+        sigma_annual = max(0.10, min(sigma_annual, 3.0))
+        mu_annual = max(-1.0, min(mu_annual, 2.0))
+
+        return {
+            "mu_annual": round(mu_annual, 4),
+            "sigma_annual": round(sigma_annual, 4),
+            "jump_intensity_lambda": round(lambda_jump, 4),
+            "jump_mean_mu_j": round(mu_j, 4),
+            "jump_vol_sigma_j": round(sigma_j, 4),
+        }
+
+    except Exception as e:
+        logging.exception("Failed to calibrate params")
+        try:
+            db.close()
+        except Exception:
+            pass
+        return None
+
+
 # PAID TIER — x402 payment required
 # ---------------------------------------------------------------------------
 @app.get("/api/v1/grade", tags=["Paid — $0.10"])
@@ -1732,58 +1857,135 @@ async def grade_card(
 async def simulate_price(
     card_name: str = Query(..., description="Card name to simulate"),
     current_price: float = Query(..., description="Current price in USD"),
-    model: str = Query("heston", description="Model: heston, merton, or kou"),
+    model: str = Query("merton", description="Model: gbm (Geometric Brownian Motion) or merton (Jump-Diffusion)"),
     days: int = Query(30, ge=1, le=365, description="Forecast horizon in days"),
     simulations: int = Query(10000, ge=100, le=100000, description="Number of Monte Carlo paths"),
 ):
     """
     💰 **$0.015 USDC** — Monte Carlo Price Simulation.
     
-    Runs stochastic simulations using real market data.
-    Models: Heston (vol-of-vol), Merton (jump-diffusion), Kou (double-exp jumps).
-    Returns percentile bands (5th, 25th, 50th, 75th, 95th).
+    Runs vectorized stochastic simulations using numpy.
+    
+    Models:
+    - **gbm**: Geometric Brownian Motion — standard log-normal diffusion
+    - **merton**: Merton Jump-Diffusion — GBM + Poisson-driven price jumps
+      (jumps model sudden events: buyouts, influencer videos, ban lists)
+    
+    Returns percentile bands (5th, 25th, 50th, 75th, 95th) plus risk metrics
+    (VaR_95, CVaR_95 / Expected Shortfall).
     
     Returns `402 Payment Required` — sign USDC payment on Base to access.
     """
-    result = call_mcp_tool("monte_carlo_simulation", {
-        "card_name": card_name,
-        "current_price": current_price,
-        "model": model,
-        "forecast_days": days,
-        "num_simulations": simulations,
-    })
+    import numpy as np
 
-    if "error" in result:
-        # Fallback: run a lightweight inline simulation so the endpoint always returns 200
-        import random
-        import math
-        mu = 0.05   # 5% annual drift
-        sigma = 0.35 # 35% annual vol
-        dt = 1.0 / 252.0
-        paths = []
-        for _ in range(min(simulations, 5000)):
-            price = current_price
-            for _ in range(days):
-                price *= math.exp((mu - 0.5 * sigma**2) * dt + sigma * math.sqrt(dt) * random.gauss(0, 1))
-            paths.append(round(price, 2))
-        paths.sort()
-        n = len(paths)
-        result = {
-            "card_name": card_name,
-            "model": model,
-            "days": days,
-            "simulations": n,
-            "percentiles": {
-                "5th": paths[int(n * 0.05)],
-                "25th": paths[int(n * 0.25)],
-                "50th": paths[int(n * 0.50)],
-                "75th": paths[int(n * 0.75)],
-                "95th": paths[int(n * 0.95)],
-            },
-            "source": "inline_fallback"
+    # Try to get calibrated parameters from the MCP data layer
+    calibrated = _get_calibrated_params(card_name)
+
+    # Model parameters (calibrated from data or sensible defaults)
+    if calibrated:
+        mu = calibrated["mu_annual"]
+        sigma = calibrated["sigma_annual"]
+        lambda_jump = calibrated.get("jump_intensity_lambda", 2.0)
+        mu_j = calibrated.get("jump_mean_mu_j", -0.05)
+        sigma_j = calibrated.get("jump_vol_sigma_j", 0.10)
+        param_source = "calibrated_from_market_data"
+    else:
+        mu = 0.03       # Conservative 3% annual drift for collectibles
+        sigma = 0.40     # 40% annual vol (typical for mid-liquidity TCG)
+        lambda_jump = 2.0  # ~2 jumps per year
+        mu_j = -0.05     # Jumps average -5% (asymmetric downside)
+        sigma_j = 0.10   # Jump size std dev 10%
+        param_source = "default_tcg_priors"
+
+    dt = 1.0 / 365.0
+    n_sims = min(simulations, 50000)
+
+    if model == "merton":
+        # ── Merton Jump-Diffusion (vectorized) ──
+        # GBM component
+        Z = np.random.standard_normal((n_sims, days))
+        # Poisson jump arrivals
+        N = np.random.poisson(lambda_jump * dt, (n_sims, days))
+        # Jump magnitudes (log-normal)
+        J = N * np.random.normal(mu_j, sigma_j, (n_sims, days))
+        J_cumulative = np.cumsum(J, axis=1)
+
+        t = np.arange(1, days + 1) * dt
+        # Drift compensator: adjust drift for the expected jump component
+        # E[e^J] = e^(mu_j + 0.5*sigma_j^2), so compensator = lambda*(E[e^J]-1)
+        jump_compensator = lambda_jump * (np.exp(mu_j + 0.5 * sigma_j**2) - 1)
+        drift = (mu - 0.5 * sigma**2 - jump_compensator) * t
+        diffusion = sigma * np.cumsum(np.sqrt(dt) * Z, axis=1)
+
+        paths = current_price * np.exp(drift + diffusion + J_cumulative)
+        final_prices = paths[:, -1]
+        model_label = "merton_jump_diffusion"
+        model_params = {
+            "drift_mu": round(mu, 4),
+            "diffusion_sigma": round(sigma, 4),
+            "jump_intensity_lambda": round(lambda_jump, 4),
+            "jump_mean_mu_j": round(mu_j, 4),
+            "jump_vol_sigma_j": round(sigma_j, 4),
+        }
+    else:
+        # ── Geometric Brownian Motion (vectorized) ──
+        Z = np.random.standard_normal((n_sims, days))
+        t = np.arange(1, days + 1) * dt
+        drift = (mu - 0.5 * sigma**2) * t
+        diffusion = sigma * np.cumsum(np.sqrt(dt) * Z, axis=1)
+
+        paths = current_price * np.exp(drift + diffusion)
+        final_prices = paths[:, -1]
+        model_label = "geometric_brownian_motion"
+        model_params = {
+            "drift_mu": round(mu, 4),
+            "diffusion_sigma": round(sigma, 4),
         }
 
+    # ── Risk Metrics ──
+    sorted_prices = np.sort(final_prices)
+    n = len(sorted_prices)
+    var_95_price = float(sorted_prices[int(n * 0.05)])
+    # CVaR (Expected Shortfall): mean of all paths below the 5th percentile
+    tail = sorted_prices[:int(n * 0.05)]
+    cvar_95_price = float(np.mean(tail)) if len(tail) > 0 else var_95_price
+
+    # Return-based risk metrics
+    var_95_return = round(((var_95_price - current_price) / current_price) * 100, 2)
+    cvar_95_return = round(((cvar_95_price - current_price) / current_price) * 100, 2)
+
+    result = {
+        "card_name": card_name,
+        "current_price": current_price,
+        "model": model_label,
+        "days": days,
+        "simulations": n_sims,
+        "param_source": param_source,
+        "model_params": model_params,
+        "forecast_percentiles": {
+            "5th": round(float(sorted_prices[int(n * 0.05)]), 4),
+            "25th": round(float(sorted_prices[int(n * 0.25)]), 4),
+            "50th": round(float(sorted_prices[int(n * 0.50)]), 4),
+            "75th": round(float(sorted_prices[int(n * 0.75)]), 4),
+            "95th": round(float(sorted_prices[int(n * 0.95)]), 4),
+        },
+        "risk_metrics": {
+            "VaR_95": round(var_95_price, 4),
+            "VaR_95_pct": var_95_return,
+            "CVaR_95": round(cvar_95_price, 4),
+            "CVaR_95_pct": cvar_95_return,
+            "interpretation": (
+                f"95% VaR: There is a 5% chance the price drops below ${round(var_95_price, 2)} "
+                f"({var_95_return}%) over {days} days. "
+                f"Expected Shortfall (CVaR): If that tail event occurs, the average loss lands at "
+                f"${round(cvar_95_price, 2)} ({cvar_95_return}%)."
+            ),
+        },
+    }
+
     return {"status": "ok", "tool": "monte_carlo", "price": "$0.015", "data": result}
+
+
 
 
 @app.get("/api/v1/crypto-oracle", tags=["Paid — $0.05"])
@@ -1841,45 +2043,69 @@ async def crypto_oracle(
         logging.exception("Failed to fetch Web3 data")
         raise HTTPException(status_code=502, detail="Upstream data provider error")
 
-    # Feed real-time data into Monte Carlo Simulation (Heston Model Equivalent)
-    # Using the inline logic for immediate, secure execution
-    mu = 0.15   # Higher drift for crypto/NFTs
-    sigma = 0.85 # Very high volatility for NFTs
-    dt = 1.0 / 252.0
-    paths = []
-    
-    # 20k stochastic simulations
-    for _ in range(20000):
-        price = floor_price
-        for _ in range(days):
-            price *= math.exp((mu - 0.5 * sigma**2) * dt + sigma * math.sqrt(dt) * random.gauss(0, 1))
-        paths.append(round(price, 4))
-        
-    paths.sort()
-    n = len(paths)
-    
+    # Feed real-time floor price into Merton Jump-Diffusion (vectorized)
+    import numpy as np
+
+    # NFT-appropriate parameters (higher vol + more frequent jumps than TCG)
+    mu = 0.10        # 10% annual drift (NFT floors are speculative)
+    sigma = 0.70     # 70% annual vol (NFTs are highly volatile)
+    lambda_jump = 4.0  # ~4 jumps per year (rug pulls, hype cycles)
+    mu_j = -0.08     # Jumps average -8% (asymmetric downside for NFTs)
+    sigma_j = 0.15   # Jump size std dev 15%
+    dt = 1.0 / 365.0
+    n_sims = 20000
+
+    # Merton Jump-Diffusion (vectorized numpy)
+    Z = np.random.standard_normal((n_sims, days))
+    N = np.random.poisson(lambda_jump * dt, (n_sims, days))
+    J = N * np.random.normal(mu_j, sigma_j, (n_sims, days))
+    J_cumulative = np.cumsum(J, axis=1)
+
+    t = np.arange(1, days + 1) * dt
+    jump_compensator = lambda_jump * (np.exp(mu_j + 0.5 * sigma_j**2) - 1)
+    drift = (mu - 0.5 * sigma**2 - jump_compensator) * t
+    diffusion = sigma * np.cumsum(np.sqrt(dt) * Z, axis=1)
+
+    sim_paths = floor_price * np.exp(drift + diffusion + J_cumulative)
+    final_prices = np.sort(sim_paths[:, -1])
+    n = len(final_prices)
+
+    # Risk metrics
+    var_95_price = float(final_prices[int(n * 0.05)])
+    tail = final_prices[:int(n * 0.05)]
+    cvar_95_price = float(np.mean(tail)) if len(tail) > 0 else var_95_price
+    var_95_pct = round(((var_95_price - floor_price) / floor_price) * 100, 2)
+    cvar_95_pct = round(((cvar_95_price - floor_price) / floor_price) * 100, 2)
+
     result = {
         "contract": contract_address,
         "network": network,
         "current_floor_price": floor_price,
         "currency": "ETH",
-        "model": "heston_stochastic",
+        "model": "merton_jump_diffusion",
         "days": days,
-        "simulations": 20000,
+        "simulations": n_sims,
         "model_params": {
-            "drift": mu,
-            "vol_of_vol": sigma,
-            "mean_reversion": 1.5,
-            "long_term_variance": round(sigma ** 2, 4)
+            "drift_mu": mu,
+            "diffusion_sigma": sigma,
+            "jump_intensity_lambda": lambda_jump,
+            "jump_mean_mu_j": mu_j,
+            "jump_vol_sigma_j": sigma_j,
         },
         "forecast_percentiles": {
-            "5th": paths[int(n * 0.05)],
-            "25th": paths[int(n * 0.25)],
-            "50th": paths[int(n * 0.50)],
-            "75th": paths[int(n * 0.75)],
-            "95th": paths[int(n * 0.95)],
+            "5th": round(float(final_prices[int(n * 0.05)]), 4),
+            "25th": round(float(final_prices[int(n * 0.25)]), 4),
+            "50th": round(float(final_prices[int(n * 0.50)]), 4),
+            "75th": round(float(final_prices[int(n * 0.75)]), 4),
+            "95th": round(float(final_prices[int(n * 0.95)]), 4),
         },
-        "source": "alchemy_shroomy_oracle"
+        "risk_metrics": {
+            "VaR_95": round(var_95_price, 4),
+            "VaR_95_pct": var_95_pct,
+            "CVaR_95": round(cvar_95_price, 4),
+            "CVaR_95_pct": cvar_95_pct,
+        },
+        "source": "alchemy_merton_oracle"
     }
 
     return {"status": "ok", "tool": "crypto_oracle", "price": "$0.05", "data": result}
@@ -1893,14 +2119,14 @@ async def coin_history(
     """
     💰 **$0.05 USDC** — Historical Token Simulator.
     
-    Fetches real-time and historical coin prices via CoinGecko API and passes the pricing 
-    data into the Heston stochastic Monte Carlo engine for volatility-aware projections.
+    Fetches real-time coin prices via CoinGecko API and runs Merton Jump-Diffusion
+    Monte Carlo simulation with vectorized numpy. Returns percentile forecasts
+    and risk metrics (VaR, CVaR).
     
     Returns `402 Payment Required` — sign USDC payment on Base to access.
     """
     import os
-    import math
-    import random
+    import numpy as np
     
     cg_key = os.getenv("COINGECKO_API_KEY")
     if not cg_key:
@@ -1935,42 +2161,64 @@ async def coin_history(
         logging.exception("Failed to fetch CoinGecko data")
         raise HTTPException(status_code=502, detail="Upstream data provider error")
 
-    # Feed real-time data into Monte Carlo Simulation
-    # For highly liquid cryptos like BTC/ETH, volatility is lower than NFTs
-    mu = 0.08   # Crypto drift
-    sigma = 0.65 # Crypto volatility
+    # Merton Jump-Diffusion (vectorized numpy)
+    # Crypto parameters: moderate vol with jump events (hacks, regulation, ETF approvals)
+    mu = 0.08        # 8% annual drift
+    sigma = 0.60     # 60% annual vol (liquid crypto)
+    lambda_jump = 3.0  # ~3 jumps per year
+    mu_j = -0.06     # Jumps average -6%
+    sigma_j = 0.12   # Jump size std dev 12%
     dt = 1.0 / 365.0
-    paths = []
-    
-    for _ in range(20000):
-        price = current_price
-        for _ in range(days):
-            price *= math.exp((mu - 0.5 * sigma**2) * dt + sigma * math.sqrt(dt) * random.gauss(0, 1))
-        paths.append(round(price, 4))
-        
-    paths.sort()
-    n = len(paths)
+    n_sims = 20000
+
+    Z = np.random.standard_normal((n_sims, days))
+    N = np.random.poisson(lambda_jump * dt, (n_sims, days))
+    J = N * np.random.normal(mu_j, sigma_j, (n_sims, days))
+    J_cumulative = np.cumsum(J, axis=1)
+
+    t = np.arange(1, days + 1) * dt
+    jump_compensator = lambda_jump * (np.exp(mu_j + 0.5 * sigma_j**2) - 1)
+    drift = (mu - 0.5 * sigma**2 - jump_compensator) * t
+    diffusion = sigma * np.cumsum(np.sqrt(dt) * Z, axis=1)
+
+    sim_paths = current_price * np.exp(drift + diffusion + J_cumulative)
+    final_prices = np.sort(sim_paths[:, -1])
+    n = len(final_prices)
+
+    # Risk metrics
+    var_95_price = float(final_prices[int(n * 0.05)])
+    tail = final_prices[:int(n * 0.05)]
+    cvar_95_price = float(np.mean(tail)) if len(tail) > 0 else var_95_price
+    var_95_pct = round(((var_95_price - current_price) / current_price) * 100, 2)
+    cvar_95_pct = round(((cvar_95_price - current_price) / current_price) * 100, 2)
     
     result = {
         "coin_id": coin_id,
         "current_price_usd": current_price,
-        "model": "heston_stochastic",
+        "model": "merton_jump_diffusion",
         "days": days,
-        "simulations": 20000,
+        "simulations": n_sims,
         "model_params": {
-            "drift": mu,
-            "vol_of_vol": sigma,
-            "mean_reversion": 1.5,
-            "long_term_variance": round(sigma ** 2, 4)
+            "drift_mu": mu,
+            "diffusion_sigma": sigma,
+            "jump_intensity_lambda": lambda_jump,
+            "jump_mean_mu_j": mu_j,
+            "jump_vol_sigma_j": sigma_j,
         },
         "forecast_percentiles": {
-            "5th": paths[int(n * 0.05)],
-            "25th": paths[int(n * 0.25)],
-            "50th": paths[int(n * 0.50)],
-            "75th": paths[int(n * 0.75)],
-            "95th": paths[int(n * 0.95)],
+            "5th": round(float(final_prices[int(n * 0.05)]), 4),
+            "25th": round(float(final_prices[int(n * 0.25)]), 4),
+            "50th": round(float(final_prices[int(n * 0.50)]), 4),
+            "75th": round(float(final_prices[int(n * 0.75)]), 4),
+            "95th": round(float(final_prices[int(n * 0.95)]), 4),
         },
-        "source": "coingecko_oracle"
+        "risk_metrics": {
+            "VaR_95": round(var_95_price, 4),
+            "VaR_95_pct": var_95_pct,
+            "CVaR_95": round(cvar_95_price, 4),
+            "CVaR_95_pct": cvar_95_pct,
+        },
+        "source": "coingecko_merton_oracle"
     }
 
     return {"status": "ok", "tool": "coin_history", "price": "$0.05", "data": result}
