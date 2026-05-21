@@ -4,3 +4,5 @@ x402[fastapi]==2.6.0
 httpx==0.28.1
 python-dotenv==1.2.2
 slowapi==0.1.9
+numpy>=1.26.0
+opencv-python-headless>=4.9.0
