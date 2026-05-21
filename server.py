@@ -20,6 +20,8 @@ import os
 import json
 import subprocess
 import sys
+import re
+import logging
 from contextlib import asynccontextmanager
 from typing import Optional
 import httpx
@@ -89,7 +91,6 @@ def call_mcp_tool(tool_name: str, arguments: dict) -> dict:
         else:
             return {"error": f"Unknown tool: {tool_name}"}
     except Exception as e:
-        import logging
         logging.exception(f"Tool execution error in {tool_name}")
         return {"error": "Internal tool execution error. Please try again."}
 
@@ -1805,15 +1806,23 @@ async def crypto_oracle(
     
     alchemy_key = os.getenv("ALCHEMY_API_KEY")
     if not alchemy_key:
-        raise HTTPException(status_code=500, detail="ALCHEMY_API_KEY not configured on server")
+        raise HTTPException(status_code=503, detail="Upstream data provider not configured")
+
+    # X-2: Validate contract address format (EIP-55)
+    if not re.match(r'^0x[0-9a-fA-F]{40}$', contract_address):
+        raise HTTPException(status_code=400, detail="Invalid contract address format — must be 0x + 40 hex characters")
+    # Validate network parameter
+    if not re.match(r'^[a-z0-9-]+$', network):
+        raise HTTPException(status_code=400, detail="Invalid network format")
         
     url = f"https://{network}.g.alchemy.com/nft/v3/{alchemy_key}/getFloorPrice?contractAddress={contract_address}"
     
     try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(url, timeout=10)
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url)
             if resp.status_code != 200:
-                raise HTTPException(status_code=500, detail=f"Alchemy API error: {resp.text}")
+                logging.error(f"Alchemy API error {resp.status_code}: {resp.text[:200]}")
+                raise HTTPException(status_code=502, detail="Upstream data provider error")
             data = resp.json()
             
         # Parse floor price
@@ -1826,8 +1835,11 @@ async def crypto_oracle(
         if floor_price == 0.0:
             raise HTTPException(status_code=404, detail="Floor price not found for this contract")
             
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch Web3 data: {str(e)}")
+        logging.exception("Failed to fetch Web3 data")
+        raise HTTPException(status_code=502, detail="Upstream data provider error")
 
     # Feed real-time data into Monte Carlo Simulation (Heston Model Equivalent)
     # Using the inline logic for immediate, secure execution
@@ -1892,7 +1904,7 @@ async def coin_history(
     
     cg_key = os.getenv("COINGECKO_API_KEY")
     if not cg_key:
-        raise HTTPException(status_code=500, detail="COINGECKO_API_KEY not configured on server")
+        raise HTTPException(status_code=503, detail="CoinGecko API key not configured")
         
     # We use the free demo API
     url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart?vs_currency=usd&days=1"
@@ -1903,10 +1915,11 @@ async def coin_history(
     }
     
     try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(url, headers=headers, timeout=10)
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url, headers=headers)
             if resp.status_code != 200:
-                raise HTTPException(status_code=500, detail=f"CoinGecko API error: {resp.text}")
+                logging.error(f"CoinGecko API error {resp.status_code}: {resp.text[:200]}")
+                raise HTTPException(status_code=502, detail="Upstream data provider error")
             data = resp.json()
             
         prices = data.get("prices", [])
@@ -1916,8 +1929,11 @@ async def coin_history(
         # Get the most recent price from the array (usually the last item)
         current_price = float(prices[-1][1])
             
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch CoinGecko data: {str(e)}")
+        logging.exception("Failed to fetch CoinGecko data")
+        raise HTTPException(status_code=502, detail="Upstream data provider error")
 
     # Feed real-time data into Monte Carlo Simulation
     # For highly liquid cryptos like BTC/ETH, volatility is lower than NFTs
@@ -1969,13 +1985,17 @@ async def arb_cross(
     Finds pricing inefficiencies between Kalshi and Polymarket using Gen3 NLI intelligence.
     """
     try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(f"http://127.0.0.1:3000/api/arbs?scanType=cross-platform&minEdge={min_edge}&maxDays=1500", timeout=120)
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            resp = await client.get(f"http://127.0.0.1:3000/api/arbs?scanType=cross-platform&minEdge={min_edge}&maxDays=1500")
             if resp.status_code != 200:
-                raise HTTPException(status_code=500, detail=f"Shroomy Oracle error: {resp.text}")
+                logging.error(f"Shroomy Oracle error {resp.status_code}")
+                raise HTTPException(status_code=502, detail="Upstream scanner error")
             data = resp.json()
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch Arb data: {str(e)}")
+        logging.exception("Failed to fetch arb-cross data")
+        raise HTTPException(status_code=502, detail="Upstream scanner error")
 
     return {"status": "ok", "tool": "arb_cross", "price": "$1.00", "data": data}
 
@@ -1986,13 +2006,17 @@ async def arb_basket():
     Identifies multi-outcome prediction markets on Polymarket where buying all NO contracts guarantees a risk-free yield.
     """
     try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.get("http://127.0.0.1:3000/api/arbs?scanType=basket&minEdge=3&maxDays=1500", timeout=120)
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            resp = await client.get("http://127.0.0.1:3000/api/arbs?scanType=basket&minEdge=3&maxDays=1500")
             if resp.status_code != 200:
-                raise HTTPException(status_code=500, detail=f"Shroomy Oracle error: {resp.text}")
+                logging.error(f"Shroomy Oracle error {resp.status_code}")
+                raise HTTPException(status_code=502, detail="Upstream scanner error")
             data = resp.json()
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch Basket Arb data: {str(e)}")
+        logging.exception("Failed to fetch basket arb data")
+        raise HTTPException(status_code=502, detail="Upstream scanner error")
 
     return {"status": "ok", "tool": "arb_basket", "price": "$0.50", "data": data}
 
@@ -2003,13 +2027,17 @@ async def arb_weather():
     Compares real-time National Weather Service (NWS) forecasts against Kalshi temperature derivatives.
     """
     try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.get("http://127.0.0.1:3000/api/weather-edge", timeout=120)
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            resp = await client.get("http://127.0.0.1:3000/api/weather-edge")
             if resp.status_code != 200:
-                raise HTTPException(status_code=500, detail=f"Shroomy Oracle error: {resp.text}")
+                logging.error(f"Shroomy Oracle error {resp.status_code}")
+                raise HTTPException(status_code=502, detail="Upstream scanner error")
             data = resp.json()
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch Weather Arb data: {str(e)}")
+        logging.exception("Failed to fetch weather arb data")
+        raise HTTPException(status_code=502, detail="Upstream scanner error")
 
     return {"status": "ok", "tool": "arb_weather", "price": "$0.25", "data": data}
 
