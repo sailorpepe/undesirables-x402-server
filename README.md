@@ -16,12 +16,12 @@ Every other TCG API tells you *what* a card is. We tell you *what it's worth*, *
 |----------|-------|----------------|
 | `GET /api/v1/grade` | **$0.10** | "What PSA/Beckett grade would this card get?" — 3-stage pipeline: Vision LLM + OpenCV centering + BGS capping. Includes free ROI verdict. |
 | `GET /api/v1/grade-or-not` | **$0.10** | "Should I grade this card?" — PSA fee schedule × predicted grade × graded market value = GO/NO-GO |
-| `GET /api/v1/simulate` | **$0.015** | "What will this card be worth in 90 days?" — Heston/Merton/Kou Monte Carlo with full percentile bands |
+| `GET /api/v1/simulate` | **$0.015** | "What will this card be worth in 90 days?" — Merton Jump-Diffusion Monte Carlo with VaR/CVaR and full percentile bands |
 | `GET /api/v1/trending` | **$0.025** | "What's moving right now?" — Top 50 cards by 30-day sales volume and price velocity |
 | `GET /api/v1/arb-grade` | **$0.15** | "Where are the undervalued raw cards?" — Scans database for cards where grading ROI exceeds threshold |
 | `POST /api/v1/batch-triage` | **$0.50** | "Which of these 20 cards should I grade first?" — Profit-ranked grading triage |
-| `GET /api/v1/portfolio-optimize` | **$0.50** | "How should I allocate my budget?" — Markowitz mean-variance + Kou jump-diffusion |
-| `GET /api/v1/crypto-oracle` | **$0.05** | "What's this NFT collection worth?" — Alchemy floor + Heston Monte Carlo |
+| `GET /api/v1/portfolio-optimize` | **$0.50** | "How should I allocate my budget?" — Markowitz mean-variance + Merton Jump-Diffusion |
+| `GET /api/v1/crypto-oracle` | **$0.05** | "What's this NFT collection worth?" — Alchemy floor + Merton Jump-Diffusion |
 | `GET /api/v1/coin-history` | **$0.05** | "Where is this token going?" — CoinGecko OHLC + Monte Carlo |
 | `GET /api/v1/arb-cross` | **$1.00** | "Any cross-platform prediction market edges?" — Polymarket vs Kalshi NLI |
 | `GET /api/v1/arb-basket` | **$0.50** | "Any guaranteed-profit basket arbs?" — Multi-outcome NO aggregation |
@@ -47,13 +47,14 @@ Every paid Oracle response ships with the exact `model_params` used to generate 
 
 ```json
 {
-  "model": "heston_stochastic",
+  "model": "merton_jump_diffusion",
   "simulations": 20000,
   "model_params": {
-    "drift": 0.15,
-    "vol_of_vol": 0.85,
-    "mean_reversion": 1.5,
-    "long_term_variance": 0.7225
+    "drift_mu": 0.10,
+    "diffusion_sigma": 0.70,
+    "jump_intensity_lambda": 4.0,
+    "jump_mean_mu_j": -0.05,
+    "jump_std_sigma_j": 0.15
   },
   "forecast_percentiles": {
     "5th": 2.6214,
