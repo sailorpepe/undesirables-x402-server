@@ -1642,13 +1642,20 @@ async def check_alerts_now(request: Request):
 
 def _get_calibrated_params(card_name: str) -> dict:
     """
-    Attempt to get calibrated mu/sigma/jump params from the TCG market database.
-    Uses time-scaled weekly returns for statistically sound estimates.
-    Returns None if insufficient data.
+    Calibrate mu/sigma/jump params from TCG market database.
+
+    Fixes applied (v2 — May 2026):
+      1. Weekly resampling for stable drift estimates (not raw /sqrt(Δt))
+      2. Shroomy fallback with magnitude-based daily/annual detection
+      3. Jump detection on time-scaled returns (apples-to-apples)
+      4. Standard errors for mu, sigma, lambda (param_confidence)
+      5. Mean-reversion detection via lag-1 autocorrelation
+
+    Returns dict with calibrated params + confidence, or None.
     """
     import math
     import statistics
-    from datetime import datetime
+    from datetime import datetime, timedelta
 
     db = _get_db()
     if not db:
@@ -1673,7 +1680,7 @@ def _get_calibrated_params(card_name: str) -> dict:
             [pid]
         ).fetchall()
 
-        # Also check shroomy_stats as fallback
+        # ── Shroomy stats fallback (FIX #2) ──
         if len(history) < 5:
             shroomy = db.execute(
                 "SELECT drift, volatility, last_price FROM shroomy_stats WHERE product_id = ?",
@@ -1681,20 +1688,45 @@ def _get_calibrated_params(card_name: str) -> dict:
             ).fetchone()
             db.close()
             if shroomy and shroomy[1] and shroomy[1] > 0:
-                sigma = shroomy[1] * math.sqrt(365) if shroomy[1] < 1 else shroomy[1]
-                mu = shroomy[0] * 365 if shroomy[0] else 0.03
+                raw_drift = shroomy[0] if shroomy[0] else 0.0
+                raw_vol = shroomy[1]
+
+                # Magnitude-based detection: daily vol is typically 0.005–0.05,
+                # annual vol is typically 0.10–3.0.
+                # If raw_vol < 0.08, it's almost certainly daily.
+                if raw_vol < 0.08:
+                    sigma = raw_vol * math.sqrt(365)
+                    mu = raw_drift * 365
+                else:
+                    # Already annualized — use directly
+                    sigma = raw_vol
+                    mu = raw_drift
+
+                # Clamp
+                sigma = max(0.10, min(sigma, 3.0))
+                mu = max(-1.0, min(mu, 2.0))
+
                 return {
-                    "mu_annual": mu,
-                    "sigma_annual": sigma,
+                    "mu_annual": round(mu, 4),
+                    "sigma_annual": round(sigma, 4),
                     "jump_intensity_lambda": 2.0,
                     "jump_mean_mu_j": -0.05,
                     "jump_vol_sigma_j": 0.10,
+                    "param_source_detail": "shroomy_stats_fallback",
+                    "data_points": 0,
+                    "param_confidence": {
+                        "mu_se": None,
+                        "sigma_se": None,
+                        "lambda_se": None,
+                        "note": "Fallback from pre-computed stats; no standard errors available"
+                    },
+                    "mean_reversion": None,
                 }
             return None
 
         db.close()
 
-        # Parse dates and prices
+        # ── Parse dates and prices ──
         dated_prices = []
         for date_str, price in history:
             try:
@@ -1706,50 +1738,164 @@ def _get_calibrated_params(card_name: str) -> dict:
         if len(dated_prices) < 5:
             return None
 
-        # Calculate time-scaled log returns
-        returns = []
+        total_span_days = (dated_prices[-1][0] - dated_prices[0][0]).days
+        total_years = max(total_span_days / 365.0, 0.01)
+
+        # ══════════════════════════════════════════════════════════
+        # FIX #1: Weekly resampling for drift accuracy
+        # Instead of /sqrt(Δt) scaling, resample to fixed weekly buckets
+        # ══════════════════════════════════════════════════════════
+
+        weekly_returns = []
+        if total_span_days >= 28:
+            # Bucket prices by ISO week
+            weekly_buckets = {}
+            for dt_val, price in dated_prices:
+                iso_year, iso_week, _ = dt_val.isocalendar()
+                week_key = (iso_year, iso_week)
+                weekly_buckets[week_key] = (dt_val, price)  # last price in each week
+
+            sorted_weeks = sorted(weekly_buckets.keys())
+            for i in range(1, len(sorted_weeks)):
+                prev_dt, prev_price = weekly_buckets[sorted_weeks[i - 1]]
+                curr_dt, curr_price = weekly_buckets[sorted_weeks[i]]
+                if prev_price > 0 and curr_price > 0:
+                    lr = math.log(curr_price / prev_price)
+                    weekly_returns.append(lr)
+
+        # Fallback: time-scaled daily returns if not enough weekly data
+        daily_scaled_returns = []
+        raw_log_returns = []  # unscaled, for jump detection
         for i in range(1, len(dated_prices)):
-            delta_days = (dated_prices[i][0] - dated_prices[i-1][0]).days
+            delta_days = (dated_prices[i][0] - dated_prices[i - 1][0]).days
             if delta_days <= 0:
                 continue
-            log_return = math.log(dated_prices[i][1] / dated_prices[i-1][1])
-            # Scale to daily equivalent
-            daily_return = log_return / math.sqrt(delta_days)
-            returns.append((log_return, delta_days, daily_return))
+            lr = math.log(dated_prices[i][1] / dated_prices[i - 1][1])
+            scaled = lr / math.sqrt(delta_days)
+            daily_scaled_returns.append(scaled)
+            raw_log_returns.append((lr, delta_days, scaled))
 
-        if len(returns) < 3:
+        # Choose best estimate method
+        if len(weekly_returns) >= 8:
+            mu_est = statistics.mean(weekly_returns) * 52  # weekly → annual
+            sigma_est = statistics.stdev(weekly_returns) * math.sqrt(52)
+            n_obs = len(weekly_returns)
+            method = "weekly_resampling"
+        elif len(daily_scaled_returns) >= 5:
+            mu_est = statistics.mean(daily_scaled_returns) * 365
+            sigma_est = statistics.stdev(daily_scaled_returns) * math.sqrt(365)
+            n_obs = len(daily_scaled_returns)
+            method = "time_scaled_daily_fallback"
+        else:
             return None
 
-        daily_returns = [r[2] for r in returns]
-        raw_returns = [r[0] for r in returns]
+        # ══════════════════════════════════════════════════════════
+        # FIX #3: Jump detection on time-scaled returns (consistent)
+        # Use daily_scaled_returns for threshold, then count
+        # ══════════════════════════════════════════════════════════
 
-        # Annualize
-        mu_daily = statistics.mean(daily_returns)
-        sigma_daily = statistics.stdev(daily_returns) if len(daily_returns) > 1 else 0.02
-        mu_annual = mu_daily * 365
-        sigma_annual = sigma_daily * math.sqrt(365)
+        if len(daily_scaled_returns) >= 5:
+            sigma_scaled = statistics.stdev(daily_scaled_returns)
+            threshold = 2.0 * sigma_scaled
 
-        # Jump detection: returns beyond 2 sigma
-        threshold = 2.0 * sigma_daily
-        jumps = [r for r in raw_returns if abs(r) > threshold * math.sqrt(max(1, 1))]
-        total_days = (dated_prices[-1][0] - dated_prices[0][0]).days
-        total_years = max(total_days / 365.0, 0.01)
-        lambda_jump = len(jumps) / total_years if total_years > 0 else 2.0
-        lambda_jump = max(0.5, min(lambda_jump, 20.0))  # Clamp to reasonable range
+            # Detect jumps on SCALED returns (apples-to-apples comparison)
+            jump_scaled = [r for r in daily_scaled_returns if abs(r) > threshold]
+            n_jumps = len(jump_scaled)
+            lambda_jump = n_jumps / total_years if total_years > 0 else 2.0
+            lambda_jump = max(0.5, min(lambda_jump, 20.0))
 
-        mu_j = statistics.mean(jumps) if jumps else -0.05
-        sigma_j = statistics.stdev(jumps) if len(jumps) > 1 else 0.10
+            # Jump mean and vol from the SCALED jumps, then annualize
+            if n_jumps >= 2:
+                mu_j = statistics.mean(jump_scaled) * math.sqrt(1)  # already daily-scaled
+                sigma_j = statistics.stdev(jump_scaled) * math.sqrt(1)
+            elif n_jumps == 1:
+                mu_j = jump_scaled[0]
+                sigma_j = abs(jump_scaled[0]) * 0.5
+            else:
+                mu_j = -0.05
+                sigma_j = 0.10
+        else:
+            lambda_jump = 2.0
+            mu_j = -0.05
+            sigma_j = 0.10
+            n_jumps = 0
+
+        # ══════════════════════════════════════════════════════════
+        # FIX #4: Standard errors (confidence intervals)
+        # ══════════════════════════════════════════════════════════
+
+        # SE of mean: sigma / sqrt(n)
+        if method == "weekly_resampling" and len(weekly_returns) > 1:
+            weekly_sigma = statistics.stdev(weekly_returns)
+            mu_se = weekly_sigma / math.sqrt(len(weekly_returns)) * 52  # annualized
+            sigma_se = weekly_sigma * math.sqrt(52) / math.sqrt(2 * (len(weekly_returns) - 1))
+        elif len(daily_scaled_returns) > 1:
+            daily_sigma = statistics.stdev(daily_scaled_returns)
+            mu_se = daily_sigma / math.sqrt(len(daily_scaled_returns)) * 365
+            sigma_se = daily_sigma * math.sqrt(365) / math.sqrt(2 * (len(daily_scaled_returns) - 1))
+        else:
+            mu_se = None
+            sigma_se = None
+
+        # SE of lambda (Poisson): sqrt(lambda / T)
+        lambda_se = math.sqrt(lambda_jump / total_years) if total_years > 0 else None
+
+        # ══════════════════════════════════════════════════════════
+        # FIX #5: Mean-reversion detection (lag-1 autocorrelation)
+        # Negative autocorrelation → mean-reverting
+        # ══════════════════════════════════════════════════════════
+
+        mean_reversion_score = None
+        if len(weekly_returns) >= 10:
+            wr = weekly_returns
+            mean_wr = statistics.mean(wr)
+            demeaned = [r - mean_wr for r in wr]
+            numerator = sum(demeaned[i] * demeaned[i + 1] for i in range(len(demeaned) - 1))
+            denominator = sum(d ** 2 for d in demeaned)
+            if denominator > 0:
+                autocorr = numerator / denominator
+                mean_reversion_score = round(autocorr, 4)
+        elif len(daily_scaled_returns) >= 10:
+            ds = daily_scaled_returns
+            mean_ds = statistics.mean(ds)
+            demeaned = [r - mean_ds for r in ds]
+            numerator = sum(demeaned[i] * demeaned[i + 1] for i in range(len(demeaned) - 1))
+            denominator = sum(d ** 2 for d in demeaned)
+            if denominator > 0:
+                autocorr = numerator / denominator
+                mean_reversion_score = round(autocorr, 4)
 
         # Sanity clamps
-        sigma_annual = max(0.10, min(sigma_annual, 3.0))
-        mu_annual = max(-1.0, min(mu_annual, 2.0))
+        sigma_est = max(0.10, min(sigma_est, 3.0))
+        mu_est = max(-1.0, min(mu_est, 2.0))
+        mu_j = max(-0.50, min(mu_j, 0.50))
+        sigma_j = max(0.01, min(sigma_j, 0.50))
 
         return {
-            "mu_annual": round(mu_annual, 4),
-            "sigma_annual": round(sigma_annual, 4),
+            "mu_annual": round(mu_est, 4),
+            "sigma_annual": round(sigma_est, 4),
             "jump_intensity_lambda": round(lambda_jump, 4),
             "jump_mean_mu_j": round(mu_j, 4),
             "jump_vol_sigma_j": round(sigma_j, 4),
+            "param_source_detail": method,
+            "data_points": len(dated_prices),
+            "observation_span_days": total_span_days,
+            "jumps_detected": n_jumps,
+            "param_confidence": {
+                "mu_se": round(mu_se, 4) if mu_se is not None else None,
+                "sigma_se": round(sigma_se, 4) if sigma_se is not None else None,
+                "lambda_se": round(lambda_se, 4) if lambda_se is not None else None,
+            },
+            "mean_reversion": {
+                "lag1_autocorrelation": mean_reversion_score,
+                "interpretation": (
+                    "Strong mean-reversion" if mean_reversion_score is not None and mean_reversion_score < -0.3
+                    else "Mild mean-reversion" if mean_reversion_score is not None and mean_reversion_score < -0.1
+                    else "Trend-following" if mean_reversion_score is not None and mean_reversion_score > 0.1
+                    else "Random walk" if mean_reversion_score is not None
+                    else "Insufficient data"
+                ),
+            } if mean_reversion_score is not None else None,
         }
 
     except Exception as e:
@@ -1982,6 +2128,17 @@ async def simulate_price(
             ),
         },
     }
+
+    # Surface calibration metadata if available
+    if calibrated:
+        result["calibration_metadata"] = {
+            "method": calibrated.get("param_source_detail"),
+            "data_points": calibrated.get("data_points"),
+            "observation_span_days": calibrated.get("observation_span_days"),
+            "jumps_detected": calibrated.get("jumps_detected"),
+            "param_confidence": calibrated.get("param_confidence"),
+            "mean_reversion": calibrated.get("mean_reversion"),
+        }
 
     return {"status": "ok", "tool": "monte_carlo", "price": "$0.015", "data": result}
 
