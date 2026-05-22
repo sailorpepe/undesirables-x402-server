@@ -1637,19 +1637,22 @@ async def check_alerts_now(request: Request):
 
 
 # ---------------------------------------------------------------------------
-# Monte Carlo Calibration — pulls real market data for simulation params
+# Monte Carlo Calibration v3 — Institutional-grade parameter estimation
 # ---------------------------------------------------------------------------
 
 def _get_calibrated_params(card_name: str) -> dict:
     """
     Calibrate mu/sigma/jump params from TCG market database.
 
-    Fixes applied (v2 — May 2026):
-      1. Weekly resampling for stable drift estimates (not raw /sqrt(Δt))
-      2. Shroomy fallback with magnitude-based daily/annual detection
-      3. Jump detection on time-scaled returns (apples-to-apples)
-      4. Standard errors for mu, sigma, lambda (param_confidence)
-      5. Mean-reversion detection via lag-1 autocorrelation
+    v3 fixes (May 22, 2026 — from quant audit):
+      1. Drift via MLE: CAGR + Itô variance correction (not /sqrt(Δt) scaling)
+         — Drift scales linearly with t, NOT with sqrt(t)
+      2. Sigma via gap-scaled weekly returns (weeks_elapsed, not fixed 1-week)
+      3. Jump detection at 3.5σ (not 2.0σ — avoids 5% false positive rate)
+      4. mu_se via Merton (1980): σ/√T, NOT σ/√N
+         — Drift SE depends on calendar time, not sampling frequency
+      5. Autocorrelation relabeled: detects microstructure noise (Roll 1984),
+         not true mean-reversion
 
     Returns dict with calibrated params + confidence, or None.
     """
@@ -1680,7 +1683,7 @@ def _get_calibrated_params(card_name: str) -> dict:
             [pid]
         ).fetchall()
 
-        # ── Shroomy stats fallback (FIX #2) ──
+        # ── Shroomy stats fallback ──
         if len(history) < 5:
             shroomy = db.execute(
                 "SELECT drift, volatility, last_price FROM shroomy_stats WHERE product_id = ?",
@@ -1698,11 +1701,9 @@ def _get_calibrated_params(card_name: str) -> dict:
                     sigma = raw_vol * math.sqrt(365)
                     mu = raw_drift * 365
                 else:
-                    # Already annualized — use directly
                     sigma = raw_vol
                     mu = raw_drift
 
-                # Clamp
                 sigma = max(0.10, min(sigma, 3.0))
                 mu = max(-1.0, min(mu, 2.0))
 
@@ -1720,7 +1721,7 @@ def _get_calibrated_params(card_name: str) -> dict:
                         "lambda_se": None,
                         "note": "Fallback from pre-computed stats; no standard errors available"
                     },
-                    "mean_reversion": None,
+                    "microstructure_autocorrelation": None,
                 }
             return None
 
@@ -1742,18 +1743,18 @@ def _get_calibrated_params(card_name: str) -> dict:
         total_years = max(total_span_days / 365.0, 0.01)
 
         # ══════════════════════════════════════════════════════════
-        # FIX #1: Weekly resampling for drift accuracy
-        # Instead of /sqrt(Δt) scaling, resample to fixed weekly buckets
+        # SIGMA ESTIMATION: Weekly returns with gap-scaling
+        # Weekly buckets but scale each return by actual weeks elapsed
+        # to avoid treating a Week1→Week4 gap as a single 1-week return
         # ══════════════════════════════════════════════════════════
 
-        weekly_returns = []
+        weekly_returns_scaled = []  # Each entry is a 1-week-equivalent return
         if total_span_days >= 28:
-            # Bucket prices by ISO week
             weekly_buckets = {}
             for dt_val, price in dated_prices:
                 iso_year, iso_week, _ = dt_val.isocalendar()
                 week_key = (iso_year, iso_week)
-                weekly_buckets[week_key] = (dt_val, price)  # last price in each week
+                weekly_buckets[week_key] = (dt_val, price)
 
             sorted_weeks = sorted(weekly_buckets.keys())
             for i in range(1, len(sorted_weeks)):
@@ -1761,11 +1762,13 @@ def _get_calibrated_params(card_name: str) -> dict:
                 curr_dt, curr_price = weekly_buckets[sorted_weeks[i]]
                 if prev_price > 0 and curr_price > 0:
                     lr = math.log(curr_price / prev_price)
-                    weekly_returns.append(lr)
+                    weeks_gap = max((curr_dt - prev_dt).days / 7.0, 0.1)
+                    # Scale to 1-week-equivalent: divide by sqrt(weeks_gap)
+                    scaled_lr = lr / math.sqrt(weeks_gap)
+                    weekly_returns_scaled.append(scaled_lr)
 
-        # Fallback: time-scaled daily returns if not enough weekly data
+        # Fallback: time-scaled daily returns
         daily_scaled_returns = []
-        raw_log_returns = []  # unscaled, for jump detection
         for i in range(1, len(dated_prices)):
             delta_days = (dated_prices[i][0] - dated_prices[i - 1][0]).days
             if delta_days <= 0:
@@ -1773,41 +1776,46 @@ def _get_calibrated_params(card_name: str) -> dict:
             lr = math.log(dated_prices[i][1] / dated_prices[i - 1][1])
             scaled = lr / math.sqrt(delta_days)
             daily_scaled_returns.append(scaled)
-            raw_log_returns.append((lr, delta_days, scaled))
 
-        # Choose best estimate method
-        if len(weekly_returns) >= 8:
-            mu_est = statistics.mean(weekly_returns) * 52  # weekly → annual
-            sigma_est = statistics.stdev(weekly_returns) * math.sqrt(52)
-            n_obs = len(weekly_returns)
-            method = "weekly_resampling"
+        # Sigma estimation (volatility scales with sqrt(t) — this is correct)
+        if len(weekly_returns_scaled) >= 8:
+            sigma_est = statistics.stdev(weekly_returns_scaled) * math.sqrt(52)
+            n_obs = len(weekly_returns_scaled)
+            method = "weekly_gap_scaled"
         elif len(daily_scaled_returns) >= 5:
-            mu_est = statistics.mean(daily_scaled_returns) * 365
             sigma_est = statistics.stdev(daily_scaled_returns) * math.sqrt(365)
             n_obs = len(daily_scaled_returns)
-            method = "time_scaled_daily_fallback"
+            method = "daily_scaled_fallback"
         else:
             return None
 
         # ══════════════════════════════════════════════════════════
-        # FIX #3: Jump detection on time-scaled returns (consistent)
-        # Use daily_scaled_returns for threshold, then count
+        # DRIFT ESTIMATION: MLE via CAGR + Itô correction
+        # Drift scales LINEARLY with t. Not sqrt(t).
+        # MLE: mu = log(S_T/S_0)/T + 0.5*sigma^2
+        # ══════════════════════════════════════════════════════════
+
+        cagr = math.log(dated_prices[-1][1] / dated_prices[0][1]) / total_years
+        mu_est = cagr + 0.5 * sigma_est ** 2  # Itô variance correction
+
+        # ══════════════════════════════════════════════════════════
+        # JUMP DETECTION: 3.5σ threshold (not 2.0σ)
+        # At 2σ, 5% of pure-random-walk returns trigger false positives.
+        # At 3.5σ, false positive rate drops to ~0.05%.
         # ══════════════════════════════════════════════════════════
 
         if len(daily_scaled_returns) >= 5:
             sigma_scaled = statistics.stdev(daily_scaled_returns)
-            threshold = 2.0 * sigma_scaled
+            threshold = 3.5 * sigma_scaled
 
-            # Detect jumps on SCALED returns (apples-to-apples comparison)
             jump_scaled = [r for r in daily_scaled_returns if abs(r) > threshold]
             n_jumps = len(jump_scaled)
             lambda_jump = n_jumps / total_years if total_years > 0 else 2.0
             lambda_jump = max(0.5, min(lambda_jump, 20.0))
 
-            # Jump mean and vol from the SCALED jumps, then annualize
             if n_jumps >= 2:
-                mu_j = statistics.mean(jump_scaled) * math.sqrt(1)  # already daily-scaled
-                sigma_j = statistics.stdev(jump_scaled) * math.sqrt(1)
+                mu_j = statistics.mean(jump_scaled)
+                sigma_j = statistics.stdev(jump_scaled)
             elif n_jumps == 1:
                 mu_j = jump_scaled[0]
                 sigma_j = abs(jump_scaled[0]) * 0.5
@@ -1821,49 +1829,37 @@ def _get_calibrated_params(card_name: str) -> dict:
             n_jumps = 0
 
         # ══════════════════════════════════════════════════════════
-        # FIX #4: Standard errors (confidence intervals)
+        # STANDARD ERRORS — Merton (1980)
+        # Drift SE depends on CALENDAR TIME, not sample size.
+        # mu_se = sigma / sqrt(T), NOT sigma / sqrt(N)
+        # Sigma SE uses chi-squared degrees of freedom.
         # ══════════════════════════════════════════════════════════
 
-        # SE of mean: sigma / sqrt(n)
-        if method == "weekly_resampling" and len(weekly_returns) > 1:
-            weekly_sigma = statistics.stdev(weekly_returns)
-            mu_se = weekly_sigma / math.sqrt(len(weekly_returns)) * 52  # annualized
-            sigma_se = weekly_sigma * math.sqrt(52) / math.sqrt(2 * (len(weekly_returns) - 1))
-        elif len(daily_scaled_returns) > 1:
-            daily_sigma = statistics.stdev(daily_scaled_returns)
-            mu_se = daily_sigma / math.sqrt(len(daily_scaled_returns)) * 365
-            sigma_se = daily_sigma * math.sqrt(365) / math.sqrt(2 * (len(daily_scaled_returns) - 1))
+        mu_se = sigma_est / math.sqrt(total_years) if total_years > 0 else None
+        if n_obs > 1:
+            sigma_se = sigma_est / math.sqrt(2 * (n_obs - 1))
         else:
-            mu_se = None
             sigma_se = None
 
-        # SE of lambda (Poisson): sqrt(lambda / T)
         lambda_se = math.sqrt(lambda_jump / total_years) if total_years > 0 else None
 
         # ══════════════════════════════════════════════════════════
-        # FIX #5: Mean-reversion detection (lag-1 autocorrelation)
-        # Negative autocorrelation → mean-reverting
+        # MICROSTRUCTURE AUTOCORRELATION — Roll (1984)
+        # Lag-1 autocorrelation detects bid-ask bounce, NOT mean-reversion.
+        # Negative autocorr = microstructure noise from alternating bid/ask.
         # ══════════════════════════════════════════════════════════
 
-        mean_reversion_score = None
-        if len(weekly_returns) >= 10:
-            wr = weekly_returns
-            mean_wr = statistics.mean(wr)
-            demeaned = [r - mean_wr for r in wr]
+        autocorr_score = None
+        returns_for_autocorr = weekly_returns_scaled if len(weekly_returns_scaled) >= 10 else (
+            daily_scaled_returns if len(daily_scaled_returns) >= 10 else None
+        )
+        if returns_for_autocorr:
+            mean_r = statistics.mean(returns_for_autocorr)
+            demeaned = [r - mean_r for r in returns_for_autocorr]
             numerator = sum(demeaned[i] * demeaned[i + 1] for i in range(len(demeaned) - 1))
             denominator = sum(d ** 2 for d in demeaned)
             if denominator > 0:
-                autocorr = numerator / denominator
-                mean_reversion_score = round(autocorr, 4)
-        elif len(daily_scaled_returns) >= 10:
-            ds = daily_scaled_returns
-            mean_ds = statistics.mean(ds)
-            demeaned = [r - mean_ds for r in ds]
-            numerator = sum(demeaned[i] * demeaned[i + 1] for i in range(len(demeaned) - 1))
-            denominator = sum(d ** 2 for d in demeaned)
-            if denominator > 0:
-                autocorr = numerator / denominator
-                mean_reversion_score = round(autocorr, 4)
+                autocorr_score = round(numerator / denominator, 4)
 
         # Sanity clamps
         sigma_est = max(0.10, min(sigma_est, 3.0))
@@ -1880,22 +1876,29 @@ def _get_calibrated_params(card_name: str) -> dict:
             "param_source_detail": method,
             "data_points": len(dated_prices),
             "observation_span_days": total_span_days,
+            "observation_span_years": round(total_years, 4),
             "jumps_detected": n_jumps,
             "param_confidence": {
                 "mu_se": round(mu_se, 4) if mu_se is not None else None,
                 "sigma_se": round(sigma_se, 4) if sigma_se is not None else None,
                 "lambda_se": round(lambda_se, 4) if lambda_se is not None else None,
+                "note": (
+                    f"Drift SE follows Merton (1980): sigma/sqrt(T). "
+                    f"With T={round(total_years, 2)}yr, mu is inherently noisy."
+                    if total_years < 1 else None
+                ),
             },
-            "mean_reversion": {
-                "lag1_autocorrelation": mean_reversion_score,
+            "microstructure_autocorrelation": {
+                "lag1_autocorrelation": autocorr_score,
                 "interpretation": (
-                    "Strong mean-reversion" if mean_reversion_score is not None and mean_reversion_score < -0.3
-                    else "Mild mean-reversion" if mean_reversion_score is not None and mean_reversion_score < -0.1
-                    else "Trend-following" if mean_reversion_score is not None and mean_reversion_score > 0.1
-                    else "Random walk" if mean_reversion_score is not None
+                    "Strong bid-ask bounce" if autocorr_score is not None and autocorr_score < -0.3
+                    else "Moderate microstructure noise" if autocorr_score is not None and autocorr_score < -0.1
+                    else "Momentum signal" if autocorr_score is not None and autocorr_score > 0.1
+                    else "White noise" if autocorr_score is not None
                     else "Insufficient data"
                 ),
-            } if mean_reversion_score is not None else None,
+                "warning": "Negative autocorrelation in illiquid assets reflects bid-ask bounce (Roll 1984), not true mean-reversion."
+            } if autocorr_score is not None else None,
         }
 
     except Exception as e:
@@ -2023,6 +2026,7 @@ async def simulate_price(
     Returns `402 Payment Required` — sign USDC payment on Base to access.
     """
     import numpy as np
+    import math
 
     # Try to get calibrated parameters from the MCP data layer
     calibrated = _get_calibrated_params(card_name)
@@ -2043,28 +2047,40 @@ async def simulate_price(
         sigma_j = 0.10   # Jump size std dev 10%
         param_source = "default_tcg_priors"
 
-    dt = 1.0 / 365.0
+    T_years = days / 365.0
     n_sims = min(simulations, 50000)
+    # Ensure even for antithetic variates
+    if n_sims % 2 != 0:
+        n_sims += 1
+
+    # Thread-safe RNG (critical for FastAPI async concurrency)
+    rng = np.random.default_rng()
+
+    # ── Antithetic Variates: free variance reduction on VaR ──
+    # Mirror random draws to halve the standard error of tail estimates
+    Z_half = rng.standard_normal(n_sims // 2, dtype=np.float32)
+    Z = np.concatenate([Z_half, -Z_half])
+
+    jump_compensator = lambda_jump * (np.exp(mu_j + 0.5 * sigma_j**2) - 1)
 
     if model == "merton":
-        # ── Merton Jump-Diffusion (vectorized) ──
-        # GBM component
-        Z = np.random.standard_normal((n_sims, days))
-        # Poisson jump arrivals
-        N = np.random.poisson(lambda_jump * dt, (n_sims, days))
-        # Jump magnitudes (log-normal)
-        J = N * np.random.normal(mu_j, sigma_j, (n_sims, days))
-        J_cumulative = np.cumsum(J, axis=1)
+        # ── Merton Jump-Diffusion: O(1) terminal state ──
+        # Compound Poisson: N ~ Poisson(λT), then SUM of N independent
+        # normal draws. Variance = N*sigma_j^2, not N^2*sigma_j^2.
+        N = rng.poisson(lambda_jump * T_years, n_sims)
+        J = np.where(
+            N > 0,
+            rng.normal(N * mu_j, np.sqrt(np.maximum(N, 1)) * sigma_j),
+            0.0
+        )
 
-        t = np.arange(1, days + 1) * dt
-        # Drift compensator: adjust drift for the expected jump component
-        # E[e^J] = e^(mu_j + 0.5*sigma_j^2), so compensator = lambda*(E[e^J]-1)
-        jump_compensator = lambda_jump * (np.exp(mu_j + 0.5 * sigma_j**2) - 1)
-        drift = (mu - 0.5 * sigma**2 - jump_compensator) * t
-        diffusion = sigma * np.cumsum(np.sqrt(dt) * Z, axis=1)
+        drift_term = (mu - 0.5 * sigma**2 - jump_compensator) * T_years
+        diffusion = sigma * math.sqrt(T_years) * Z
 
-        paths = current_price * np.exp(drift + diffusion + J_cumulative)
-        final_prices = paths[:, -1]
+        # Overflow protection: clip exponent to prevent np.exp() → inf
+        exponent = np.clip(drift_term + diffusion + J, a_min=-700.0, a_max=700.0)
+        final_prices = current_price * np.exp(exponent)
+
         model_label = "merton_jump_diffusion"
         model_params = {
             "drift_mu": round(mu, 4),
@@ -2074,14 +2090,13 @@ async def simulate_price(
             "jump_vol_sigma_j": round(sigma_j, 4),
         }
     else:
-        # ── Geometric Brownian Motion (vectorized) ──
-        Z = np.random.standard_normal((n_sims, days))
-        t = np.arange(1, days + 1) * dt
-        drift = (mu - 0.5 * sigma**2) * t
-        diffusion = sigma * np.cumsum(np.sqrt(dt) * Z, axis=1)
+        # ── Geometric Brownian Motion: O(1) terminal state ──
+        drift_term = (mu - 0.5 * sigma**2) * T_years
+        diffusion = sigma * math.sqrt(T_years) * Z
 
-        paths = current_price * np.exp(drift + diffusion)
-        final_prices = paths[:, -1]
+        exponent = np.clip(drift_term + diffusion, a_min=-700.0, a_max=700.0)
+        final_prices = current_price * np.exp(exponent)
+
         model_label = "geometric_brownian_motion"
         model_params = {
             "drift_mu": round(mu, 4),
@@ -2135,9 +2150,10 @@ async def simulate_price(
             "method": calibrated.get("param_source_detail"),
             "data_points": calibrated.get("data_points"),
             "observation_span_days": calibrated.get("observation_span_days"),
+            "observation_span_years": calibrated.get("observation_span_years"),
             "jumps_detected": calibrated.get("jumps_detected"),
             "param_confidence": calibrated.get("param_confidence"),
-            "mean_reversion": calibrated.get("mean_reversion"),
+            "microstructure_autocorrelation": calibrated.get("microstructure_autocorrelation"),
         }
 
     return {"status": "ok", "tool": "monte_carlo", "price": "$0.015", "data": result}
@@ -2200,8 +2216,9 @@ async def crypto_oracle(
         logging.exception("Failed to fetch Web3 data")
         raise HTTPException(status_code=502, detail="Upstream data provider error")
 
-    # Feed real-time floor price into Merton Jump-Diffusion (vectorized)
+    # Feed real-time floor price into Merton Jump-Diffusion
     import numpy as np
+    import math
 
     # NFT-appropriate parameters (higher vol + more frequent jumps than TCG)
     mu = 0.10        # 10% annual drift (NFT floors are speculative)
@@ -2209,22 +2226,23 @@ async def crypto_oracle(
     lambda_jump = 4.0  # ~4 jumps per year (rug pulls, hype cycles)
     mu_j = -0.08     # Jumps average -8% (asymmetric downside for NFTs)
     sigma_j = 0.15   # Jump size std dev 15%
-    dt = 1.0 / 365.0
+    T_years = days / 365.0
     n_sims = 20000
 
-    # Merton Jump-Diffusion (vectorized numpy)
-    Z = np.random.standard_normal((n_sims, days))
-    N = np.random.poisson(lambda_jump * dt, (n_sims, days))
-    J = N * np.random.normal(mu_j, sigma_j, (n_sims, days))
-    J_cumulative = np.cumsum(J, axis=1)
+    # O(1) terminal state with antithetic variates + correct compound Poisson
+    rng = np.random.default_rng()
+    Z_half = rng.standard_normal(n_sims // 2, dtype=np.float32)
+    Z = np.concatenate([Z_half, -Z_half])
 
-    t = np.arange(1, days + 1) * dt
+    N = rng.poisson(lambda_jump * T_years, n_sims)
+    J = np.where(N > 0, rng.normal(N * mu_j, np.sqrt(np.maximum(N, 1)) * sigma_j), 0.0)
+
     jump_compensator = lambda_jump * (np.exp(mu_j + 0.5 * sigma_j**2) - 1)
-    drift = (mu - 0.5 * sigma**2 - jump_compensator) * t
-    diffusion = sigma * np.cumsum(np.sqrt(dt) * Z, axis=1)
+    drift_term = (mu - 0.5 * sigma**2 - jump_compensator) * T_years
+    diffusion = sigma * math.sqrt(T_years) * Z
 
-    sim_paths = floor_price * np.exp(drift + diffusion + J_cumulative)
-    final_prices = np.sort(sim_paths[:, -1])
+    exponent = np.clip(drift_term + diffusion + J, a_min=-700.0, a_max=700.0)
+    final_prices = np.sort(floor_price * np.exp(exponent))
     n = len(final_prices)
 
     # Risk metrics
@@ -2318,28 +2336,29 @@ async def coin_history(
         logging.exception("Failed to fetch CoinGecko data")
         raise HTTPException(status_code=502, detail="Upstream data provider error")
 
-    # Merton Jump-Diffusion (vectorized numpy)
-    # Crypto parameters: moderate vol with jump events (hacks, regulation, ETF approvals)
+    # O(1) terminal state Merton JD with correct compound Poisson
+    import math
     mu = 0.08        # 8% annual drift
     sigma = 0.60     # 60% annual vol (liquid crypto)
     lambda_jump = 3.0  # ~3 jumps per year
     mu_j = -0.06     # Jumps average -6%
     sigma_j = 0.12   # Jump size std dev 12%
-    dt = 1.0 / 365.0
+    T_years = days / 365.0
     n_sims = 20000
 
-    Z = np.random.standard_normal((n_sims, days))
-    N = np.random.poisson(lambda_jump * dt, (n_sims, days))
-    J = N * np.random.normal(mu_j, sigma_j, (n_sims, days))
-    J_cumulative = np.cumsum(J, axis=1)
+    rng = np.random.default_rng()
+    Z_half = rng.standard_normal(n_sims // 2, dtype=np.float32)
+    Z = np.concatenate([Z_half, -Z_half])
 
-    t = np.arange(1, days + 1) * dt
+    N = rng.poisson(lambda_jump * T_years, n_sims)
+    J = np.where(N > 0, rng.normal(N * mu_j, np.sqrt(np.maximum(N, 1)) * sigma_j), 0.0)
+
     jump_compensator = lambda_jump * (np.exp(mu_j + 0.5 * sigma_j**2) - 1)
-    drift = (mu - 0.5 * sigma**2 - jump_compensator) * t
-    diffusion = sigma * np.cumsum(np.sqrt(dt) * Z, axis=1)
+    drift_term = (mu - 0.5 * sigma**2 - jump_compensator) * T_years
+    diffusion = sigma * math.sqrt(T_years) * Z
 
-    sim_paths = current_price * np.exp(drift + diffusion + J_cumulative)
-    final_prices = np.sort(sim_paths[:, -1])
+    exponent = np.clip(drift_term + diffusion + J, a_min=-700.0, a_max=700.0)
+    final_prices = np.sort(current_price * np.exp(exponent))
     n = len(final_prices)
 
     # Risk metrics
