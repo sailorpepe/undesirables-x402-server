@@ -608,6 +608,46 @@ try:
                 )
             )
         },
+        "GET /api/v1/phygital/arbitrage": {
+            "description": "Phygital Arbitrage Screener: cross-references Courtyard.io tokenized card listings against TCGPlayer raw prices to find BUY/SELL signals. Covers 267K+ vaulted, insured, tradeable cards on Polygon.",
+            "mimeType": "application/json",
+            "accepts": {
+                "scheme": "exact",
+                "payTo": PAYMENT_ADDRESS,
+                "price": "$0.10",
+                "network": NETWORK,
+            },
+        },
+        "GET /api/v1/phygital/search": {
+            "description": "Search 267K+ tokenized graded cards vaulted on Courtyard.io. Each card is Brink's-insured and tradeable as a Polygon NFT.",
+            "mimeType": "application/json",
+            "accepts": {
+                "scheme": "exact",
+                "payTo": PAYMENT_ADDRESS,
+                "price": "$0.05",
+                "network": NETWORK,
+            },
+        },
+        "GET /api/v1/phygital/stats": {
+            "description": "Overview of 267K+ tokenized trading cards on Courtyard.io: categories, grade distribution, and grader breakdown.",
+            "mimeType": "application/json",
+            "accepts": {
+                "scheme": "exact",
+                "payTo": PAYMENT_ADDRESS,
+                "price": "$0.05",
+                "network": NETWORK,
+            },
+        },
+        "GET /api/v1/market": {
+            "description": "Daily TCGCSV market data snapshot with top movers, price changes, and volume trends across all 13 supported TCG games.",
+            "mimeType": "application/json",
+            "accepts": {
+                "scheme": "exact",
+                "payTo": PAYMENT_ADDRESS,
+                "price": "$0.025",
+                "network": NETWORK,
+            },
+        },
     }
 
     # Build facilitator client — CDP auth for mainnet, plain for testnet
@@ -688,6 +728,14 @@ try:
                 price, tool = "$0.50", "Basket Arbitrage Scanner"
             elif "arb-weather" in path:
                 price, tool = "$0.25", "Weather Edge Scanner"
+            elif "phygital/arbitrage" in path:
+                price, tool = "$0.10", "Phygital Arbitrage Screener"
+            elif "phygital/search" in path:
+                price, tool = "$0.05", "Phygital Card Search"
+            elif "phygital/stats" in path:
+                price, tool = "$0.05", "Phygital Market Stats"
+            elif "market" in path:
+                price, tool = "$0.025", "Market Snapshot"
             elif "portfolio-optimize" in path:
                 price, tool = "$0.50", "Portfolio Optimizer"
             elif "crypto-oracle" in path:
@@ -730,8 +778,9 @@ try:
                     f"The free search and market data endpoints are available at no cost."
                 ),
                 "free_endpoints": [
-                    "GET /api/v1/search?query=<card_name> — free, no auth",
-                    "GET /api/v1/market?game=<game_name> — free, no auth",
+                    "GET /api/v1/search?query=<card_name> — free, names only (3 results)",
+                    "POST /api/v1/recommend?goal=<description> — free, workflow advisor",
+                    "GET /api/v1/accuracy — free, prediction accuracy dashboard",
                 ],
             }
             return JSONResponse(status_code=402, content=agent_response)
@@ -764,8 +813,7 @@ async def root():
         "network": NETWORK,
         "endpoints": {
             "free": [
-                {"path": "/api/v1/search", "description": "Search 370K+ TCG products across 25 games"},
-                {"path": "/api/v1/market", "description": "Daily market snapshot with top movers"},
+                {"path": "/api/v1/search", "description": "Search 432K+ TCG products — names and IDs only (3 results max)"},
                 {"path": "/api/v1/accuracy", "description": "Public prediction accuracy dashboard (MAE, hit rates)"},
                 {"path": "/api/v1/accuracy/report", "method": "POST", "description": "Report actual grade vs prediction"},
                 {"path": "/api/v1/alerts/subscribe", "method": "POST", "description": "Subscribe to price alert webhooks"},
@@ -779,6 +827,7 @@ async def root():
                 {"path": "/api/v1/grade-or-not", "price": "$0.10", "description": "Grade-or-Not ROI engine — should I grade this card?"},
                 {"path": "/api/v1/simulate", "price": "$0.015", "description": "Monte Carlo price forecasting (Merton Jump-Diffusion)"},
                 {"path": "/api/v1/trending", "price": "$0.025", "description": "Top movers by sales volume and price velocity"},
+                {"path": "/api/v1/market", "price": "$0.025", "description": "Daily market snapshot with top movers"},
                 {"path": "/api/v1/arb-grade", "price": "$0.15", "description": "Raw card arbitrage scanner — finds grading ROI opportunities"},
                 {"path": "/api/v1/batch-triage", "price": "$0.50", "method": "POST", "description": "Grade up to 20 cards, ranked by expected profit"},
                 {"path": "/api/v1/portfolio-optimize", "price": "$0.50", "description": "Markowitz portfolio optimization with Merton Jump-Diffusion"},
@@ -787,6 +836,9 @@ async def root():
                 {"path": "/api/v1/arb-cross", "price": "$1.00", "description": "Cross-platform prediction market arbitrage"},
                 {"path": "/api/v1/arb-basket", "price": "$0.50", "description": "Basket arbitrage — guaranteed NO yield aggregator"},
                 {"path": "/api/v1/arb-weather", "price": "$0.25", "description": "Weather edge scanner — NWS vs Kalshi"},
+                {"path": "/api/v1/phygital/arbitrage", "price": "$0.10", "description": "Courtyard vs TCGPlayer cross-reference — BUY/SELL signals"},
+                {"path": "/api/v1/phygital/search", "price": "$0.05", "description": "Search 267K+ tokenized graded cards on Courtyard.io"},
+                {"path": "/api/v1/phygital/stats", "price": "$0.05", "description": "Tokenized card market overview and grade distribution"},
             ],
         },
         "discovery": {
@@ -846,10 +898,10 @@ async def ai_plugin():
             "facilitator": FACILITATOR_URL,
             "pricing": {
                 "/api/v1/search": "free",
-                "/api/v1/market": "free",
                 "/api/v1/accuracy": "free",
                 "/api/v1/alerts/subscribe": "free",
                 "/api/v1/recommend": "free",
+                "/api/v1/market": "$0.025",
                 "/api/v1/grade": "$0.10",
                 "/api/v1/grade-or-not": "$0.10",
                 "/api/v1/simulate": "$0.015",
@@ -862,6 +914,9 @@ async def ai_plugin():
                 "/api/v1/arb-cross": "$1.00",
                 "/api/v1/arb-basket": "$0.50",
                 "/api/v1/arb-weather": "$0.25",
+                "/api/v1/phygital/arbitrage": "$0.10",
+                "/api/v1/phygital/search": "$0.05",
+                "/api/v1/phygital/stats": "$0.05",
             },
         },
     }
@@ -1155,20 +1210,39 @@ async def search_tcg_products(
     if "error" in result:
         raise HTTPException(status_code=500, detail=result["error"])
 
-    return {"status": "ok", "query": query, "data": result}
+    # Free tier: strip prices — return names and IDs only
+    # Full pricing data available via paid /api/v1/market endpoint
+    results = result.get("results", [])
+    limited = []
+    for r in results[:3]:  # Cap at 3 results for free tier
+        limited.append({
+            "product_id": r.get("product_id"),
+            "name": r.get("name"),
+            "category": r.get("category_name", r.get("category")),
+            "group": r.get("group_name", r.get("group")),
+            "url": r.get("url"),
+        })
+
+    return {
+        "status": "ok",
+        "query": query,
+        "results_shown": len(limited),
+        "total_available": len(results),
+        "note": "Free tier shows top 3 results without pricing. Use paid endpoints for full data.",
+        "data": {"results": limited},
+    }
 
 
-@app.get("/api/v1/market", tags=["Free"])
+@app.get("/api/v1/market", tags=["Paid"])
 @limiter.limit("30/minute")
 async def market_snapshot(
     request: Request,
     game: str = Query("Pokemon", description="Game name"),
 ):
     """
-    🆓 **FREE** — Daily TCGCSV market data snapshot.
+    💰 **$0.025 USDC** — Daily TCGCSV market data snapshot.
     
     Top movers, price changes, volume trends. Updated daily.
-    No payment required.
     """
     result = call_mcp_tool("get_market_snapshot", {"game": game})
 
@@ -3025,7 +3099,7 @@ def _get_phygital_db():
     return sqlite3.connect(f"file:{PHYGITAL_DB}?mode=ro", uri=True)
 
 
-@app.get("/api/v1/phygital/stats")
+@app.get("/api/v1/phygital/stats", tags=["Paid"])
 @limiter.limit("30/minute")
 async def phygital_stats(request: Request):
     """
@@ -3065,7 +3139,7 @@ async def phygital_stats(request: Request):
         pdb.close()
 
 
-@app.get("/api/v1/phygital/search")
+@app.get("/api/v1/phygital/search", tags=["Paid"])
 @limiter.limit("30/minute")
 async def phygital_search(
     request: Request,
@@ -3127,7 +3201,7 @@ async def phygital_search(
         pdb.close()
 
 
-@app.get("/api/v1/phygital/arbitrage")
+@app.get("/api/v1/phygital/arbitrage", tags=["Paid"])
 @limiter.limit("20/minute")
 async def phygital_arbitrage(
     request: Request,
