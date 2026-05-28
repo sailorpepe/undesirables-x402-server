@@ -618,26 +618,6 @@ try:
                 "network": NETWORK,
             },
         },
-        "GET /api/v1/phygital/search": {
-            "description": "Search 267K+ tokenized graded cards vaulted on Courtyard.io. Each card is Brink's-insured and tradeable as a Polygon NFT.",
-            "mimeType": "application/json",
-            "accepts": {
-                "scheme": "exact",
-                "payTo": PAYMENT_ADDRESS,
-                "price": "$0.05",
-                "network": NETWORK,
-            },
-        },
-        "GET /api/v1/phygital/stats": {
-            "description": "Overview of 267K+ tokenized trading cards on Courtyard.io: categories, grade distribution, and grader breakdown.",
-            "mimeType": "application/json",
-            "accepts": {
-                "scheme": "exact",
-                "payTo": PAYMENT_ADDRESS,
-                "price": "$0.05",
-                "network": NETWORK,
-            },
-        },
         "GET /api/v1/market": {
             "description": "Daily TCGCSV market data snapshot with top movers, price changes, and volume trends across all 13 supported TCG games.",
             "mimeType": "application/json",
@@ -730,10 +710,6 @@ try:
                 price, tool = "$0.25", "Weather Edge Scanner"
             elif "phygital/arbitrage" in path:
                 price, tool = "$0.10", "Phygital Arbitrage Screener"
-            elif "phygital/search" in path:
-                price, tool = "$0.05", "Phygital Card Search"
-            elif "phygital/stats" in path:
-                price, tool = "$0.05", "Phygital Market Stats"
             elif "market" in path:
                 price, tool = "$0.025", "Market Snapshot"
             elif "portfolio-optimize" in path:
@@ -821,6 +797,8 @@ async def root():
                 {"path": "/api/v1/alerts/{id}", "method": "DELETE", "description": "Unsubscribe from alert"},
                 {"path": "/api/v1/alerts/check", "method": "POST", "description": "Trigger alert check cycle"},
                 {"path": "/api/v1/recommend", "method": "POST", "description": "AI workflow advisor — tells you which endpoints to call and in what order"},
+                {"path": "/api/v1/phygital/stats", "description": "Tokenized card market overview — 267K+ cards, categories, grade distribution"},
+                {"path": "/api/v1/phygital/search", "description": "Search tokenized graded cards on Courtyard.io"},
             ],
             "paid": [
                 {"path": "/api/v1/grade", "price": "$0.10", "description": "3-stage AI card grading (Vision + OpenCV + BGS capping) with ROI verdict"},
@@ -837,8 +815,6 @@ async def root():
                 {"path": "/api/v1/arb-basket", "price": "$0.50", "description": "Basket arbitrage — guaranteed NO yield aggregator"},
                 {"path": "/api/v1/arb-weather", "price": "$0.25", "description": "Weather edge scanner — NWS vs Kalshi"},
                 {"path": "/api/v1/phygital/arbitrage", "price": "$0.10", "description": "Courtyard vs TCGPlayer cross-reference — BUY/SELL signals"},
-                {"path": "/api/v1/phygital/search", "price": "$0.05", "description": "Search 267K+ tokenized graded cards on Courtyard.io"},
-                {"path": "/api/v1/phygital/stats", "price": "$0.05", "description": "Tokenized card market overview and grade distribution"},
             ],
         },
         "discovery": {
@@ -915,8 +891,8 @@ async def ai_plugin():
                 "/api/v1/arb-basket": "$0.50",
                 "/api/v1/arb-weather": "$0.25",
                 "/api/v1/phygital/arbitrage": "$0.10",
-                "/api/v1/phygital/search": "$0.05",
-                "/api/v1/phygital/stats": "$0.05",
+                "/api/v1/phygital/search": "free",
+                "/api/v1/phygital/stats": "free",
             },
         },
     }
@@ -3099,7 +3075,7 @@ def _get_phygital_db():
     return sqlite3.connect(f"file:{PHYGITAL_DB}?mode=ro", uri=True)
 
 
-@app.get("/api/v1/phygital/stats", tags=["Paid"])
+@app.get("/api/v1/phygital/stats", tags=["Free"])
 @limiter.limit("30/minute")
 async def phygital_stats(request: Request):
     """
@@ -3139,7 +3115,7 @@ async def phygital_stats(request: Request):
         pdb.close()
 
 
-@app.get("/api/v1/phygital/search", tags=["Paid"])
+@app.get("/api/v1/phygital/search", tags=["Free"])
 @limiter.limit("30/minute")
 async def phygital_search(
     request: Request,
