@@ -2,7 +2,7 @@
 
 <img src="assets/banner.png" alt="TCG Oracle Banner" width="100%" />
 
-# ⚡ TCG Oracle — x402 Financial Intelligence API
+# ⚡ TCG Oracle — AI Card Grading & Market Data
 
 **28 paid AI endpoints · USDC micropayments on Base · Merton Jump-Diffusion Monte Carlo · AI card grading**
 
