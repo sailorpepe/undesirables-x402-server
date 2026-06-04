@@ -1172,41 +1172,87 @@ async def search_tcg_products(
     limit: int = Query(10, ge=1, le=50, description="Max results (1-50)"),
 ):
     """
-    🆓 **FREE** — Search 370K+ TCG products across 25 games.
-    
-    Returns product names, sets, and current market prices from TCGCSV.
-    No payment required.
+    🆓 **FREE** — Search 432K+ TCG products across 13 game categories.
+
+    Returns product names, sets, and IDs from the TCGCSV database.
+    Our own frontend gets full results with prices; external agents get
+    free tier (3 results, no prices).
     """
-    args = {"query": query, "limit": limit}
-    if game:
-        args["game"] = game
+    conn = _get_db()
+    if not conn:
+        raise HTTPException(status_code=503, detail="TCG database not available")
 
-    result = call_mcp_tool("search_tcg_products", args)
+    # Internal requests from our site get full data
+    ua = request.headers.get("user-agent", "")
+    is_internal = "TheUndesirables-Site" in ua
 
-    if "error" in result:
-        raise HTTPException(status_code=500, detail=result["error"])
+    try:
+        cur = conn.cursor()
+        safe_query = query.replace("%", "\\%").replace("_", "\\_")
 
-    # Free tier: strip prices — return names and IDs only
-    # Full pricing data available via paid /api/v1/market endpoint
-    results = result.get("results", [])
-    limited = []
-    for r in results[:3]:  # Cap at 3 results for free tier
-        limited.append({
-            "product_id": r.get("product_id"),
-            "name": r.get("name"),
-            "category": r.get("category_name", r.get("category")),
-            "group": r.get("group_name", r.get("group")),
-            "url": r.get("url"),
-        })
+        # Build query with optional game filter
+        sql = """
+            SELECT DISTINCT c.product_id, c.name, c.clean_name, c.category_id,
+                   p.market_price, p.low_price, p.mid_price, p.date
+            FROM cards c
+            LEFT JOIN price_history p ON c.product_id = p.product_id
+                AND p.date = (SELECT MAX(date) FROM price_history)
+            WHERE (c.name LIKE ? OR c.clean_name LIKE ?)
+        """
+        params = [f"%{safe_query}%", f"%{safe_query}%"]
 
-    return {
-        "status": "ok",
-        "query": query,
-        "results_shown": len(limited),
-        "total_available": len(results),
-        "note": "Free tier shows top 3 results without pricing. Use paid endpoints for full data.",
-        "data": {"results": limited},
-    }
+        if game:
+            game_lower = game.lower().strip()
+            cat_id = GAME_CATEGORIES.get(game_lower)
+            if cat_id:
+                sql += " AND c.category_id = ?"
+                params.append(cat_id)
+
+        sql += " ORDER BY COALESCE(p.market_price, 0) DESC LIMIT ?"
+        params.append(limit)
+
+        cur.execute(sql, params)
+        rows = cur.fetchall()
+
+        if is_internal:
+            # Full results with prices for our own site
+            results = []
+            for r in rows:
+                cat_id = r[3]
+                cat_name = next((k for k, v in GAME_CATEGORIES.items() if v == cat_id), None)
+                results.append({
+                    "product_id": r[0],
+                    "name": r[1] or r[2],
+                    "category_id": cat_id,
+                    "category": cat_name.title() if cat_name else None,
+                    "marketPrice": r[4] or 0,
+                    "lowPrice": r[5] or 0,
+                    "midPrice": r[6] or 0,
+                    "priceDate": r[7],
+                })
+            return {
+                "status": "ok",
+                "query": query,
+                "data": {"results": results, "total": len(results)},
+            }
+        else:
+            # Free tier for external agents: 3 results, no prices
+            limited = []
+            for r in rows[:3]:
+                limited.append({
+                    "product_id": r[0],
+                    "name": r[1] or r[2],
+                })
+            return {
+                "status": "ok",
+                "query": query,
+                "results_shown": len(limited),
+                "total_available": len(rows),
+                "note": "Free tier shows top 3 results without pricing. Use paid endpoints for full data.",
+                "data": {"results": limited},
+            }
+    finally:
+        conn.close()
 
 
 @app.get("/api/v1/market", tags=["Paid"])
@@ -1226,6 +1272,118 @@ async def market_snapshot(
         raise HTTPException(status_code=500, detail=result["error"])
 
     return {"status": "ok", "game": game, "data": result}
+
+
+# ---------------------------------------------------------------------------
+# PRICE HISTORY — Free tier, returns daily snapshots for charting
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/history", tags=["Free"])
+@limiter.limit("60/minute")
+async def price_history(
+    request: Request,
+    productId: int = Query(..., description="TCGPlayer product ID"),
+):
+    """
+    🆓 **FREE** — Price history for a single product.
+
+    Returns up to 30 daily snapshots with market, low, mid, high prices,
+    plus product stats (views, sales, volatility).
+    """
+    conn = _get_db()
+    if not conn:
+        raise HTTPException(status_code=503, detail="TCG database not available")
+
+    try:
+        cur = conn.cursor()
+
+        # Get price history with all price columns
+        cur.execute(
+            """
+            SELECT date, market_price, low_price, mid_price, high_price
+            FROM price_history
+            WHERE product_id = ? AND market_price > 0
+            ORDER BY date ASC
+            """,
+            (productId,),
+        )
+        rows = cur.fetchall()
+
+        if not rows:
+            return {"status": "ok", "data": {"product_id": productId, "prices": [], "total": 0}}
+
+        # Take last 30
+        recent = rows[-30:]
+        prices = []
+        for r in recent:
+            entry = {"date": r[0], "market": r[1], "low": r[2] or 0}
+            if r[3]:
+                entry["mid"] = r[3]
+            if r[4]:
+                entry["high"] = r[4]
+            prices.append(entry)
+
+        # Get product stats from shroomy_stats
+        stats = {}
+        try:
+            cur.execute(
+                """
+                SELECT views_30d, sales_30d, last_price, drift, volatility
+                FROM shroomy_stats
+                WHERE product_id = ?
+                """,
+                (productId,),
+            )
+            stat_row = cur.fetchone()
+            if stat_row:
+                if stat_row[0]:
+                    stats["views_30d"] = stat_row[0]
+                if stat_row[1]:
+                    stats["sales_30d"] = stat_row[1]
+                if stat_row[2]:
+                    stats["last_sale"] = stat_row[2]
+                if stat_row[3] is not None:
+                    stats["drift"] = round(stat_row[3], 4)
+                if stat_row[4] is not None:
+                    stats["volatility"] = round(stat_row[4], 4)
+        except Exception:
+            pass  # shroomy_stats table may not exist
+
+        # Get card name
+        cur.execute("SELECT name, clean_name, rarity, group_name FROM cards WHERE product_id = ?", (productId,))
+        card_row = cur.fetchone()
+        card_info = {}
+        if card_row:
+            card_info["name"] = card_row[0] or card_row[1]
+            if card_row[2]:
+                card_info["rarity"] = card_row[2]
+            if card_row[3]:
+                card_info["set"] = card_row[3]
+
+        # Compute 30D snapshot
+        markets = [p["market"] for p in prices if p["market"] > 0]
+        snapshot = {}
+        if markets:
+            import statistics
+            snapshot["high_30d"] = max(markets)
+            snapshot["low_30d"] = min(markets)
+            snapshot["avg_30d"] = round(statistics.mean(markets), 2)
+            if len(markets) >= 2:
+                snapshot["stdev"] = round(statistics.stdev(markets), 2)
+
+        return {
+            "status": "ok",
+            "data": {
+                "product_id": productId,
+                **card_info,
+                "prices": prices,
+                "total": len(rows),
+                "stats": stats if stats else None,
+                "snapshot": snapshot if snapshot else None,
+            },
+        }
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------
