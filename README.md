@@ -4,6 +4,14 @@ An x402 micropayment-gated API providing **financial intelligence for the $50B+ 
 
 > **This is not a catalog or identification API.** We answer the questions that matter: *"What will this card be worth in 90 days?"* • *"Should I grade this card?"* • *"Where are the undervalued cards right now?"*
 
+<div align="center">
+
+<img src="assets/demo.gif" alt="TCG Oracle Card Detail Demo" width="480" />
+
+*Financial intelligence for the $50B+ trading card market — powered by x402 micropayments*
+
+</div>
+
 ## ⚡ Why This Exists
 
 Every other TCG API tells you *what* a card is. We tell you *what it's worth*, *what it will be worth*, and *whether you should invest in it*. We do this using the same stochastic finance models that Wall Street uses for options pricing — applied to physical collectibles for the first time.
