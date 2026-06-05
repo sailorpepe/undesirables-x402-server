@@ -1170,6 +1170,7 @@ async def search_tcg_products(
     query: str = Query(..., description="Search term (card name, set, etc)"),
     game: Optional[str] = Query(None, description="Filter by game: Pokemon, Magic, Yu-Gi-Oh, etc"),
     limit: int = Query(10, ge=1, le=50, description="Max results (1-50)"),
+    source: Optional[str] = Query(None, description="Source identifier (e.g., 'widget')"),
 ):
     """
     🆓 **FREE** — Search 432K+ TCG products across 13 game categories.
@@ -1185,6 +1186,7 @@ async def search_tcg_products(
     # Internal requests from our site get full data
     ua = request.headers.get("user-agent", "")
     is_internal = "TheUndesirables-Site" in ua
+    is_widget = source == "widget"
 
     try:
         cur = conn.cursor()
@@ -1236,19 +1238,25 @@ async def search_tcg_products(
                 "data": {"results": results, "total": len(results)},
             }
         else:
-            # Free tier for external agents: 3 results, no prices
+            # Widget gets 8 results with names; external agents get 3
+            max_free = 8 if is_widget else 3
             limited = []
-            for r in rows[:3]:
-                limited.append({
+            for r in rows[:max_free]:
+                item = {
                     "product_id": r[0],
                     "name": r[1] or r[2],
-                })
+                }
+                if is_widget:
+                    cat_id = r[3]
+                    cat_name = next((k for k, v in GAME_CATEGORIES.items() if v == cat_id), None)
+                    item["category"] = cat_name.title() if cat_name else None
+                limited.append(item)
             return {
                 "status": "ok",
                 "query": query,
                 "results_shown": len(limited),
                 "total_available": len(rows),
-                "note": "Free tier shows top 3 results without pricing. Use paid endpoints for full data.",
+                "note": "Free tier shows top results without pricing. Use paid endpoints for full data." if not is_widget else None,
                 "data": {"results": limited},
             }
     finally:
