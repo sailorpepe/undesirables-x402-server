@@ -1165,7 +1165,7 @@ async def recommend_workflow(
 # ---------------------------------------------------------------------------
 @app.get("/api/v1/search", tags=["Free"])
 @limiter.limit("60/minute")
-async def search_tcg_products(
+def search_tcg_products(
     request: Request,
     query: str = Query(..., description="Search term (card name, set, etc)"),
     game: Optional[str] = Query(None, description="Filter by game: Pokemon, Magic, Yu-Gi-Oh, etc"),
@@ -1265,7 +1265,7 @@ async def search_tcg_products(
 
 @app.get("/api/v1/market", tags=["Paid"])
 @limiter.limit("30/minute")
-async def market_snapshot(
+def market_snapshot(
     request: Request,
     game: str = Query("Pokemon", description="Game name"),
 ):
@@ -1288,7 +1288,7 @@ async def market_snapshot(
 
 @app.get("/api/v1/history", tags=["Free"])
 @limiter.limit("60/minute")
-async def price_history(
+def price_history(
     request: Request,
     productId: int = Query(..., description="TCGPlayer product ID"),
 ):
@@ -3524,7 +3524,7 @@ ALCHEMY_KEY = os.getenv("ALCHEMY_API_KEY", "")
 
 @app.get("/api/v1/wallet/portfolio")
 @limiter.limit("10/minute")
-async def wallet_portfolio(
+def wallet_portfolio(
     request: Request,
     address: str = Query(..., description="Polygon wallet address (0x...)"),
 ):
