@@ -113,6 +113,10 @@ ALCHEMY_API_KEY=your_alchemy_key
 # CoinGecko API Key (Required for /api/v1/coin-history — free tier)
 COINGECKO_API_KEY=your_coingecko_key
 
+# Casper RPC Configuration
+CSPR_API_KEY=your_cspr_api_key
+CASPER_PEM_PATH=/absolute/path/to/casper_wallet.pem
+
 # Server Config
 HOST=0.0.0.0
 PORT=8402
