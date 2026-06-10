@@ -641,7 +641,7 @@ try:
             "description": "Batch Card Triage: upload multiple card image URLs and get a profit-ranked grading triage. Each card is graded by AI, then scored by expected ROI from professional grading. Returns a ranked list sorted by highest expected profit first. Perfect for dealers and agents evaluating collections.",
             "price": {
                 "amount": "500000",
-                "currency": PAYMENT_TOKEN,
+                "currency": USDC_ADDRESS,
                 "receiver": PAYMENT_ADDRESS,
             },
             "extensions": declare_discovery_extension(
@@ -1130,7 +1130,7 @@ async def agent_card():
             {
                 "id": "portfolio_optimize",
                 "name": "Portfolio Optimizer",
-                "description": "Markowitz mean-variance with Kou jump-diffusion Monte Carlo. $0.50 USDC.",
+                "description": "Markowitz mean-variance with Merton jump-diffusion Monte Carlo. $0.50 USDC.",
                 "tags": ["portfolio", "optimization", "finance", "paid"],
             },
             {
@@ -1239,7 +1239,7 @@ WORKFLOW_CATALOG = {
         "triggers": ["portfolio", "diversify", "allocation", "sharpe", "risk", "invest", "budget"],
         "steps": [
             {"endpoint": "/api/v1/search", "price": "free", "purpose": "Look up current prices for each card"},
-            {"endpoint": "/api/v1/portfolio-optimize", "price": "$0.50", "purpose": "Markowitz optimization with Kou jump-diffusion"},
+            {"endpoint": "/api/v1/portfolio-optimize", "price": "$0.50", "purpose": "Markowitz optimization with Merton jump-diffusion"},
         ],
         "total_cost": "$0.50",
     },
@@ -1339,18 +1339,13 @@ for _gname, _cid in GAME_CATEGORIES.items():
 
 @app.get("/api/v1/search", tags=["Free"])
 @limiter.limit("60/minute")
-async def search_tcg_products(
+def search_tcg_products(
     request: Request,
     query: str = Query(..., description="Search term (card name, set, etc)"),
     game: Optional[str] = Query(None, description="Filter by game: Pokemon, Magic, Yu-Gi-Oh, etc"),
     limit: int = Query(10, ge=1, le=50, description="Max results (1-50)"),
+    source: Optional[str] = Query(None, description="Source identifier (e.g., 'widget')"),
 ):
-    """
-    🆓 **FREE** — Search 370K+ TCG products across 25 games.
-    
-    Returns product names, sets, and current market prices from TCGCSV.
-    Internal callers (User-Agent: TheUndesirables-Site) get full results with prices.
-    External callers get top 3 results without pricing.
     """
     db = _get_db()
     if not db:
@@ -1437,20 +1432,65 @@ async def search_tcg_products(
         # Check if internal caller
         ua = request.headers.get("user-agent", "")
         is_internal = "TheUndesirables-Site" in ua
+=======
+    🆓 **FREE** — Search 432K+ TCG products across 13 game categories.
+
+    Returns product names, sets, and IDs from the TCGCSV database.
+    Our own frontend gets full results with prices; external agents get
+    free tier (3 results, no prices).
+    """
+    conn = _get_db()
+    if not conn:
+        raise HTTPException(status_code=503, detail="TCG database not available")
+
+    # Internal requests from our site get full data
+    ua = request.headers.get("user-agent", "")
+    is_internal = "TheUndesirables-Site" in ua
+    is_widget = source == "widget"
+
+    try:
+        cur = conn.cursor()
+        safe_query = query.replace("%", "\\%").replace("_", "\\_")
+
+        # Build query with optional game filter
+        sql = """
+            SELECT DISTINCT c.product_id, c.name, c.clean_name, c.category_id,
+                   p.market_price, p.low_price, p.mid_price, p.date
+            FROM cards c
+            LEFT JOIN price_history p ON c.product_id = p.product_id
+                AND p.date = (SELECT MAX(date) FROM price_history)
+            WHERE (c.name LIKE ? OR c.clean_name LIKE ?)
+        """
+        params = [f"%{safe_query}%", f"%{safe_query}%"]
+
+        if game:
+            game_lower = game.lower().strip()
+            cat_id = GAME_CATEGORIES.get(game_lower)
+            if cat_id:
+                sql += " AND c.category_id = ?"
+                params.append(cat_id)
+
+        sql += " ORDER BY COALESCE(p.market_price, 0) DESC LIMIT ?"
+        params.append(limit)
+
+        cur.execute(sql, params)
+        rows = cur.fetchall()
+>>>>>>> github/main
 
         if is_internal:
             # Full results with prices for our own site
             results = []
             for r in rows:
+                cat_id = r[3]
+                cat_name = next((k for k, v in GAME_CATEGORIES.items() if v == cat_id), None)
                 results.append({
                     "product_id": r[0],
-                    "name": r[1],
-                    "clean_name": r[2],
-                    "category_id": r[3],
-                    "category": _CATEGORY_TO_GAME.get(r[3], "Other"),
-                    "marketPrice": round(float(r[4]), 2) if r[4] else None,
-                    "lowPrice": round(float(r[5]), 2) if r[5] else None,
-                    "midPrice": round(float(r[6]), 2) if r[6] else None,
+                    "name": r[1] or r[2],
+                    "category_id": cat_id,
+                    "category": cat_name.title() if cat_name else None,
+                    "marketPrice": r[4] or 0,
+                    "lowPrice": r[5] or 0,
+                    "midPrice": r[6] or 0,
                     "priceDate": r[7],
                 })
             return {
@@ -1459,28 +1499,34 @@ async def search_tcg_products(
                 "data": {"results": results, "total": len(results)},
             }
         else:
-            # Free tier: top 3, no prices
+            # Widget gets 8 results with names; external agents get 3
+            max_free = 8 if is_widget else 3
             limited = []
-            for r in rows[:3]:
-                limited.append({
+            for r in rows[:max_free]:
+                item = {
                     "product_id": r[0],
-                    "name": r[1],
-                })
+                    "name": r[1] or r[2],
+                }
+                if is_widget:
+                    cat_id = r[3]
+                    cat_name = next((k for k, v in GAME_CATEGORIES.items() if v == cat_id), None)
+                    item["category"] = cat_name.title() if cat_name else None
+                limited.append(item)
             return {
                 "status": "ok",
                 "query": query,
                 "results_shown": len(limited),
                 "total_available": len(rows),
-                "note": "Free tier shows top 3 results without pricing. Use paid endpoints for full data.",
+                "note": "Free tier shows top results without pricing. Use paid endpoints for full data." if not is_widget else None,
                 "data": {"results": limited},
             }
     finally:
-        db.close()
+        conn.close()
 
 
 @app.get("/api/v1/market", tags=["Paid"])
 @limiter.limit("30/minute")
-async def market_snapshot(
+def market_snapshot(
     request: Request,
     game: str = Query("Pokemon", description="Game name"),
 ):
@@ -1495,6 +1541,118 @@ async def market_snapshot(
         raise HTTPException(status_code=500, detail=result["error"])
 
     return {"status": "ok", "game": game, "data": result}
+
+
+# ---------------------------------------------------------------------------
+# PRICE HISTORY — Free tier, returns daily snapshots for charting
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/history", tags=["Free"])
+@limiter.limit("60/minute")
+def price_history(
+    request: Request,
+    productId: int = Query(..., description="TCGPlayer product ID"),
+):
+    """
+    🆓 **FREE** — Price history for a single product.
+
+    Returns up to 30 daily snapshots with market, low, mid, high prices,
+    plus product stats (views, sales, volatility).
+    """
+    conn = _get_db()
+    if not conn:
+        raise HTTPException(status_code=503, detail="TCG database not available")
+
+    try:
+        cur = conn.cursor()
+
+        # Get price history with all price columns
+        cur.execute(
+            """
+            SELECT date, market_price, low_price, mid_price, high_price
+            FROM price_history
+            WHERE product_id = ? AND market_price > 0
+            ORDER BY date ASC
+            """,
+            (productId,),
+        )
+        rows = cur.fetchall()
+
+        if not rows:
+            return {"status": "ok", "data": {"product_id": productId, "prices": [], "total": 0}}
+
+        # Take last 30
+        recent = rows[-30:]
+        prices = []
+        for r in recent:
+            entry = {"date": r[0], "market": r[1], "low": r[2] or 0}
+            if r[3]:
+                entry["mid"] = r[3]
+            if r[4]:
+                entry["high"] = r[4]
+            prices.append(entry)
+
+        # Get product stats from shroomy_stats
+        stats = {}
+        try:
+            cur.execute(
+                """
+                SELECT views_30d, sales_30d, last_price, drift, volatility
+                FROM shroomy_stats
+                WHERE product_id = ?
+                """,
+                (productId,),
+            )
+            stat_row = cur.fetchone()
+            if stat_row:
+                if stat_row[0]:
+                    stats["views_30d"] = stat_row[0]
+                if stat_row[1]:
+                    stats["sales_30d"] = stat_row[1]
+                if stat_row[2]:
+                    stats["last_sale"] = stat_row[2]
+                if stat_row[3] is not None:
+                    stats["drift"] = round(stat_row[3], 4)
+                if stat_row[4] is not None:
+                    stats["volatility"] = round(stat_row[4], 4)
+        except Exception:
+            pass  # shroomy_stats table may not exist
+
+        # Get card name
+        cur.execute("SELECT name, clean_name, rarity, group_name FROM cards WHERE product_id = ?", (productId,))
+        card_row = cur.fetchone()
+        card_info = {}
+        if card_row:
+            card_info["name"] = card_row[0] or card_row[1]
+            if card_row[2]:
+                card_info["rarity"] = card_row[2]
+            if card_row[3]:
+                card_info["set"] = card_row[3]
+
+        # Compute 30D snapshot
+        markets = [p["market"] for p in prices if p["market"] > 0]
+        snapshot = {}
+        if markets:
+            import statistics
+            snapshot["high_30d"] = max(markets)
+            snapshot["low_30d"] = min(markets)
+            snapshot["avg_30d"] = round(statistics.mean(markets), 2)
+            if len(markets) >= 2:
+                snapshot["stdev"] = round(statistics.stdev(markets), 2)
+
+        return {
+            "status": "ok",
+            "data": {
+                "product_id": productId,
+                **card_info,
+                "prices": prices,
+                "total": len(rows),
+                "stats": stats if stats else None,
+                "snapshot": snapshot if snapshot else None,
+            },
+        }
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -1915,6 +2073,9 @@ async def _check_alerts():
 
         if should_trigger:
             try:
+                # Re-validate URL at fire time to prevent DNS rebinding attacks
+                if not _is_safe_url(webhook_url):
+                    continue
                 async with httpx.AsyncClient(timeout=10.0) as http:
                     await http.post(webhook_url, json={
                         "alert_id": alert_id,
@@ -2496,7 +2657,6 @@ async def crypto_oracle(
     """
     import os
     import math
-    import random
     
     alchemy_key = os.getenv("ALCHEMY_API_KEY")
     if not alchemy_key:
@@ -2844,7 +3004,7 @@ async def portfolio_optimize(
         if current_price <= 0:
             current_price = 10.0  # Default if not found
         
-        # Run Monte Carlo simulation (Kou-style with asymmetric jumps)
+        # Run Monte Carlo simulation (Merton jump-diffusion with asymmetric jumps)
         mu = 0.08
         sigma = 0.45
         dt = 1.0 / 252.0
@@ -2855,7 +3015,7 @@ async def portfolio_optimize(
             for _ in range(days):
                 # Base GBM
                 price *= math.exp((mu - 0.5 * sigma**2) * dt + sigma * math.sqrt(dt) * random.gauss(0, 1))
-                # Kou jump: ~2% chance per day of a jump
+                # Merton jump: ~2% chance per day of a jump
                 if random.random() < 0.02:
                     if random.random() < 0.4:  # 40% positive jumps
                         price *= (1 + random.expovariate(1/0.08))
@@ -3880,7 +4040,7 @@ ALCHEMY_KEY = os.getenv("ALCHEMY_API_KEY", "")
 
 @app.get("/api/v1/wallet/portfolio")
 @limiter.limit("10/minute")
-async def wallet_portfolio(
+def wallet_portfolio(
     request: Request,
     address: str = Query(..., description="Polygon wallet address (0x...)"),
 ):

@@ -1,14 +1,108 @@
-# TCG Oracle — Financial Intelligence API for Collectibles
+<div align="center">
+
+<img src="assets/banner.png" alt="TCG Oracle Banner" width="100%" />
 
 An x402 micropayment-gated API providing **financial intelligence for the $50B+ trading card market**. AI agents discover this server on the [x402 Bazaar](https://docs.cdp.coinbase.com/x402/bazaar), pay per-call with USDC on Base or CSPR on Casper Testnet, and receive institutional-grade analytics with **full model transparency**.
 
-> **This is not a catalog or identification API.** We answer the questions that matter: *"What will this card be worth in 90 days?"* • *"Should I grade this card?"* • *"Where are the undervalued cards right now?"*
+# ⚡ TCG Oracle — AI Card Grading & Market Data
+
+**28 paid AI endpoints · USDC micropayments on Base · Merton Jump-Diffusion Monte Carlo · AI card grading**
+
+![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white)
+![License: BSL-1.1](https://img.shields.io/badge/License-BSL_1.1-red?style=flat-square)
+![x402](https://img.shields.io/badge/Protocol-x402-00dcff?style=flat-square)
+![Endpoints](https://img.shields.io/badge/Endpoints-28-ff14a0?style=flat-square)
+![Base Network](https://img.shields.io/badge/Chain-Base_(L2)-0052FF?style=flat-square&logo=coinbase&logoColor=white)
+
+[API Docs](https://the-undesirables.com/docs) · [Live Terminal](https://the-undesirables.com/terminal) · [API Terms](https://the-undesirables.com/api-terms)
+
+<br />
+
+<img src="assets/demo.gif" alt="TCG Oracle Card Detail Demo" width="480" />
+
+*Financial intelligence for the $50B+ trading card market — powered by x402 micropayments*
+
+</div>
+
+---
+
+## Table of Contents
+
+- [Why This Exists](#-why-this-exists)
+- [Quick Start](#-quick-start)
+- [API Endpoints](#-api-endpoints)
+- [Model Transparency](#-full-model-transparency)
+- [Agent Discovery](#-agent-discovery)
+- [Security](#-security)
+- [License & Commercial Use](#-license--commercial-use)
+- [Star This Repo](#star-this-repo)
+
+---
 
 ## ⚡ Why This Exists
 
+> **This is not a catalog or identification API.** We answer the questions that matter: *"What will this card be worth in 90 days?"* • *"Should I grade this card?"* • *"Where are the undervalued cards right now?"*
+
 Every other TCG API tells you *what* a card is. We tell you *what it's worth*, *what it will be worth*, and *whether you should invest in it*. We do this using the same stochastic finance models that Wall Street uses for options pricing — applied to physical collectibles for the first time.
 
-### 28 API Endpoints (12 Paid, 16 Free)
+AI agents discover this server on the [x402 Bazaar](https://docs.cdp.coinbase.com/x402/bazaar), pay per-call with USDC on Base, and receive institutional-grade analytics with **full model transparency**.
+
+---
+
+## 📦 Quick Start
+
+**Prerequisites:** Python 3.11+, and a funded Coinbase Developer Platform wallet.
+
+```bash
+git clone https://github.com/sailorpepe/undesirables-x402-server.git
+cd undesirables-x402-server
+
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+### Environment Configuration
+
+Create a `.env` file in the root directory:
+
+```env
+# Your Base receive address
+PAYMENT_ADDRESS=0xYOUR_MERCHANT_WALLET
+
+# x402 Mainnet Configuration
+FACILITATOR_URL=https://api.cdp.coinbase.com/platform/v2/x402
+NETWORK=eip155:8453
+USDC_ADDRESS=0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913
+
+# CDP API Keys (Required for Base Mainnet Discovery & Settlement)
+CDP_API_KEY_ID=your_cdp_key_id
+CDP_API_KEY_PRIVATE_KEY=your_cdp_private_key
+
+# Alchemy API Key (Required for /api/v1/crypto-oracle)
+ALCHEMY_API_KEY=your_alchemy_key
+
+# CoinGecko API Key (Required for /api/v1/coin-history — free tier)
+COINGECKO_API_KEY=your_coingecko_key
+
+# Server Config
+HOST=0.0.0.0
+PORT=8402
+```
+
+### Running the Server
+
+```bash
+python server.py
+```
+
+The server automatically registers its JSON schemas with the Coinbase CDP Facilitator upon startup. Once a client successfully triggers the verify-and-settle cycle over the network, your Cloudflare or public IP will be permanently indexed in the global x402 Bazaar.
+
+---
+
+## 🔌 API Endpoints
+
+### 28 Endpoints (12 Paid, 16 Free)
 
 #### 💰 Financial Intelligence (Paid)
 
@@ -42,7 +136,9 @@ Every other TCG API tells you *what* a card is. We tell you *what it's worth*, *
 | `DELETE /api/v1/alerts/{id}` | Unsubscribe from alert |
 | `POST /api/v1/alerts/check` | Manually trigger alert evaluation cycle |
 
-### 🔍 Full Model Transparency
+---
+
+## 🔍 Full Model Transparency
 
 Every paid Oracle response ships with the exact `model_params` used to generate the forecast. Your agent doesn't just get a number — it gets the math:
 
@@ -69,7 +165,9 @@ Every paid Oracle response ships with the exact `model_params` used to generate 
 
 This allows downstream agents to validate assumptions, compare drift parameters against their own priors, or feed the raw percentiles into portfolio optimization engines.
 
-### 🤖 Agent Discovery
+---
+
+## 🤖 Agent Discovery
 
 | Protocol | Endpoint | Purpose |
 |----------|----------|---------|
@@ -130,6 +228,8 @@ python server.py
 
 The server automatically registers its JSON schemas with the Coinbase CDP Facilitator upon startup. Once a client successfully triggers the verify-and-settle cycle over the network, your Cloudflare or public IP will be permanently indexed in the global x402 Bazaar.
 
+---
+
 ## 🔒 Security
 
 - **SSRF Protection** — Webhook URLs validated against private/reserved IP ranges
@@ -137,8 +237,45 @@ The server automatically registers its JSON schemas with the Coinbase CDP Facili
 - **Rate Limiting** — Per-endpoint rate limits prevent abuse
 - **Input Validation** — All user inputs sanitized before processing
 
-## 🛡️ License
+---
 
-This project is licensed under the **Business Source License 1.1** (BSL-1.1). You are free to view, learn from, fork, and use this code for non-commercial and academic purposes. You may not use this code to host a competing commercial TCG pricing/grading oracle. See the `LICENSE` file for full terms. 
+## 📝 License & Commercial Use
 
-*After 4 years, this code will automatically convert to the Apache 2.0 license.*
+This project is licensed under the **[Business Source License 1.1 (BUSL-1.1)](LICENSE)**.
+
+We build in public and support the developer ecosystem — but we also protect the infrastructure and IP of **The Undesirables LLC**.
+
+### ✅ What You CAN Do (Free)
+
+- **Personal & Educational Use** — Download, modify, and run locally for learning, research, or personal projects.
+- **Non-Competing Applications** — Integrate our packages into your app, provided your app does not offer TCG market intelligence, pricing aggregation, AI card grading, or on-chain price oracle services as its primary function.
+- **MCP / Agent Integration** — Connect your AI agent to our tools for non-commercial use.
+- **Community Contributions** — Security audits, bug fixes, and PRs are always welcome.
+
+### 🚫 What You CANNOT Do (Use Limitation)
+
+- **Competing Service** — You may not use this code to operate a competing TCG market intelligence, pricing aggregation, AI card grading, or on-chain price oracle service.
+- **Commercial Resale** — You may not wrap our API, data pipelines, or AI models into a paid service without a commercial license.
+- **Hosted SaaS** — You may not host this software as a service for third parties without written permission.
+
+### 🔓 Open-Source Conversion
+
+On **June 1, 2030** (or 4 years after the first public release of each version), this code automatically converts to the **MIT License** — fully open source, forever.
+
+### 🤝 Commercial Licensing
+
+Building a commercial product? Want guaranteed API access or white-label integration? Contact us:
+
+📧 **theundesirables7@gmail.com** · 🐦 **[@undesirables_ai](https://x.com/undesirables_ai)**
+
+© 2026 The Undesirables LLC
+
+---
+
+<div align="center">
+
+⭐ **If this project helped you, please star this repo** — it helps others find it.
+
+[Report Bug](../../issues) · [Request Feature](../../issues)
+
+</div>
