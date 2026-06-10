@@ -1,0 +1,22 @@
+{
+  "contract_address": "0xe0dCD77D245480CEB830EA66B74849101F853451",
+  "contract_name": "WeatherEdgeOracle",
+  "chain_id": 5003,
+  "deployer": "0x77B82Fe7ADD725017E106CFE6E26Dc8b37C93Fca",
+  "first_root": "0x0x331d60b615da3886ef1293f658cf1c6754dce5064551f0d85b89453837299f2e",
+  "total_entries": 10,
+  "cities": [
+    "ATL",
+    "AUS",
+    "CHI",
+    "DEN",
+    "HOU",
+    "LAS",
+    "MIA",
+    "NYC",
+    "PHI",
+    "PHX"
+  ],
+  "deployed_at": 1781028517,
+  "explorer": "https://explorer.sepolia.mantle.xyz/address/0xe0dCD77D245480CEB830EA66B74849101F853451"
+}

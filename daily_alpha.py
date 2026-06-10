@@ -146,7 +146,12 @@ def fetch_arb_weather():
 
 
 def fetch_arb_grade():
-    """Scan SQLite for cards where grading ROI beats $35 total cost."""
+    """Scan SQLite for cards where grading ROI beats $100 cost using REAL graded prices."""
+    # PSA pricing as of June 2026:
+    #   Economy/Value tiers: PAUSED (10M card backlog)
+    #   Regular: $79.99 + ~$20 shipping/insurance = ~$100 total
+    #   Express: $149, Super Express: $349, Walk-Through: $599
+    PSA_TOTAL_COST = 100  # Regular tier + shipping
     if not DB_PATH.exists():
         print(f"[!] DB not found: {DB_PATH}")
         return None
@@ -154,44 +159,37 @@ def fetch_arb_grade():
     conn = sqlite3.connect(str(DB_PATH))
     conn.row_factory = sqlite3.Row
     try:
+        # Use REAL graded prices from eBay (graded_prices table)
+        # instead of estimated multipliers
         query = """
         SELECT 
-            COALESCE(c.name, c.clean_name) as card_name,
+            gp.card_name,
+            gp.grade,
+            gp.median_price as graded_price,
+            gp.num_listings,
             ph.market_price as raw_price,
-            CASE 
-                WHEN ph.market_price > 200 THEN 8.5
-                WHEN ph.market_price > 80 THEN 8.0
-                WHEN ph.market_price > 30 THEN 7.5
-                ELSE 7.0
-            END as est_grade,
-            ph.market_price * CASE 
-                WHEN ph.market_price > 200 THEN 2.5
-                WHEN ph.market_price > 80 THEN 2.0
-                WHEN ph.market_price > 30 THEN 1.8
-                ELSE 1.5
-            END as est_graded_value,
-            (ph.market_price * CASE 
-                WHEN ph.market_price > 200 THEN 2.5
-                WHEN ph.market_price > 80 THEN 2.0
-                WHEN ph.market_price > 30 THEN 1.8
-                ELSE 1.5
-            END - ph.market_price - 35) as expected_profit,
-            ROUND(((ph.market_price * CASE 
-                WHEN ph.market_price > 200 THEN 2.5
-                WHEN ph.market_price > 80 THEN 2.0
-                WHEN ph.market_price > 30 THEN 1.8
-                ELSE 1.5
-            END - ph.market_price - 35) / (ph.market_price + 35)) * 100, 0) as roi_pct
-        FROM price_history ph
-        LEFT JOIN cards c ON ph.product_id = c.product_id
+            ROUND(gp.median_price - ph.market_price - 100, 2) as expected_profit,
+            ROUND(((gp.median_price - ph.market_price - 100) 
+                   / (ph.market_price + 100)) * 100, 0) as roi_pct
+        FROM graded_prices gp
+        JOIN price_history ph ON gp.product_id = ph.product_id
         WHERE ph.date = (SELECT MAX(date) FROM price_history)
-          AND ph.market_price BETWEEN 15 AND 500
-          AND (ph.market_price * CASE 
-                WHEN ph.market_price > 200 THEN 2.5
-                WHEN ph.market_price > 80 THEN 2.0
-                WHEN ph.market_price > 30 THEN 1.8
-                ELSE 1.5
-            END - ph.market_price - 35) > 0
+          AND gp.median_price IS NOT NULL
+          AND ph.market_price > 10
+          AND gp.grade IN ('PSA 10', 'PSA 9')
+          AND (gp.median_price - ph.market_price - 100) > 0
+          AND gp.num_listings >= 2
+          -- Exclude sealed products (can't be PSA graded)
+          AND gp.card_name NOT LIKE '%Booster Box%'
+          AND gp.card_name NOT LIKE '%Booster Pack%'
+          AND gp.card_name NOT LIKE '%Starter Deck%'
+          AND gp.card_name NOT LIKE '%Display%'
+          AND gp.card_name NOT LIKE '%Elite Trainer%'
+          AND gp.card_name NOT LIKE '%Collection%'
+          AND gp.card_name NOT LIKE '%Bundle%'
+          AND gp.card_name NOT LIKE '%Tin %'
+          AND gp.card_name NOT LIKE '%Case%'
+          AND gp.card_name NOT LIKE '%Premium Collection%'
         ORDER BY roi_pct DESC
         LIMIT 20
         """
@@ -203,6 +201,7 @@ def fetch_arb_grade():
             "count": len(good),
             "top_cards": good[:5],
             "price_range": f"${min(o['raw_price'] for o in good):.0f}-${max(o['raw_price'] for o in good):.0f}" if good else "N/A",
+            "data_source": "eBay graded listings",
         }
     except Exception as e:
         print(f"[!] arb-grade query failed: {e}")
@@ -404,39 +403,44 @@ def format_arb_cross(data):
 
     lines.append("Full scanner with all markets:")
     lines.append("🔍 oracle.the-undesirables.com\n")
-    lines.append("🍄 @undesirable_ai")
+    lines.append("🍄 @undesirables_ai")
     lines.append("#Kalshi #Polymarket #PredictionMarkets #Arbitrage")
     return "\n".join(lines)
 
 
 def format_arb_grade(data):
-    """Grading ROI scanner — long format with top cards."""
+    """Grading ROI scanner — long format with real graded prices."""
     now = datetime.now().strftime("%B %d, %Y")
     lines = [f"🃏 Grading ROI Scanner — {now}\n"]
 
     if data["count"] > 0:
-        lines.append(f"Scanned today's TCGPlayer prices against PSA grading costs.")
+        lines.append(f"Scanned TCGPlayer raw prices vs eBay PSA graded comps.")
         lines.append(f"{data['count']} cards where grading produces positive ROI:\n")
 
         for i, card in enumerate(data["top_cards"][:3]):
             name = card.get("card_name", "?")
-            if len(name) > 45:
-                name = name[:42] + "..."
+            if len(name) > 40:
+                name = name[:37] + "..."
             roi = card.get("roi_pct", 0)
             raw = card.get("raw_price", 0)
+            graded = card.get("graded_price", 0)
             profit = card.get("expected_profit", 0)
-            grade = card.get("est_grade", 0)
+            grade = card.get("grade", "PSA 10")
+            listings = card.get("num_listings", 0)
             lines.append(f"{'🥇🥈🥉'[i]} {name}")
-            lines.append(f"   Raw: ${raw:.2f} → Est. grade {grade} → +${profit:.0f} profit ({roi:.0f}% ROI)\n")
+            lines.append(f"   Raw: ${raw:,.2f} → {grade}: ${graded:,.0f} ({listings} comps)")
+            lines.append(f"   +${profit:,.0f} profit ({roi:.0f}% ROI)\n")
 
-        lines.append(f"💡 PSA economy tier = $20 + $5 shipping = $25 total grading cost.")
+        lines.append(f"💡 PSA Regular tier = $79.99 + ~$20 shipping = ~$100 total.")
+        lines.append(f"(Economy/Value tiers paused since June 2 — 10M card backlog.)")
         lines.append(f"The question isn't IF you should grade — it's WHICH cards beat the fee.\n")
     else:
         lines.append("📉 No grading opportunities above 30% ROI today.")
         lines.append("Market is efficiently priced. Check back tomorrow.\n")
 
-    lines.append("Full scanner: oracle.the-undesirables.com\n")
-    lines.append("🍄 @undesirable_ai")
+    lines.append("Full data: http://oracle.the-undesirables.com\n")
+    lines.append("🍄")
+    lines.append("@undesirables_ai")
     lines.append("#PSA #CardGrading #TCG #TradingCards #Pokemon")
     return "\n".join(lines)
 
@@ -475,7 +479,7 @@ def format_arb_weather(data):
 
     lines.append("Full scanner with all edges:")
     lines.append("🔍 oracle.the-undesirables.com\n")
-    lines.append("🍄 @undesirable_ai")
+    lines.append("🍄 @undesirables_ai")
     lines.append("#Kalshi #PredictionMarkets #WeatherTrading")
     return "\n".join(lines)
 
@@ -505,7 +509,7 @@ def format_courtyard(data):
         lines.append(f"\nEvery card is vaulted by Brink's, insured, and tradeable on Polygon.\n")
 
     lines.append("Full arb scanner: oracle.the-undesirables.com\n")
-    lines.append("🍄 @undesirable_ai")
+    lines.append("🍄 @undesirables_ai")
     lines.append("#Courtyard #TCG #TradingCards #PhygitalCards")
     return "\n".join(lines)
 
@@ -539,7 +543,7 @@ def format_simulate(data):
 
     lines.append("Run your own simulations:")
     lines.append("🔍 oracle.the-undesirables.com\n")
-    lines.append("🍄 @undesirable_ai")
+    lines.append("🍄 @undesirables_ai")
     lines.append("#MonteCarlo #TCG #TradingCards #Pokemon #QuantFinance")
     return "\n".join(lines)
 
@@ -592,7 +596,7 @@ def format_digest(data):
 
     lines.append("All of this runs 24/7 on local compute. No cloud. No API keys to the kingdom.\n")
     lines.append("Full data: oracle.the-undesirables.com\n")
-    lines.append("🍄 @undesirable_ai")
+    lines.append("🍄 @undesirables_ai")
     lines.append("#TCG #TradingCards #PredictionMarkets #WeeklyDigest")
     return "\n".join(lines)
 
@@ -619,8 +623,8 @@ FETCHERS = {
 # ---------------------------------------------------------------------------
 # Tweet Posting
 # ---------------------------------------------------------------------------
-def post_tweet(text):
-    """Post a tweet to X via tweepy v2 API."""
+def post_tweet(text, image_path=None):
+    """Post a tweet to X via tweepy v2 API, optionally with an image."""
     try:
         import tweepy
     except ImportError:
@@ -643,7 +647,16 @@ def post_tweet(text):
         access_token_secret=access_secret,
     )
 
-    response = client.create_tweet(text=text)
+    media_ids = None
+    if image_path and Path(image_path).exists():
+        # Use v1.1 API for media upload
+        auth = tweepy.OAuth1UserHandler(api_key, api_secret, access_token, access_secret)
+        api_v1 = tweepy.API(auth)
+        media = api_v1.media_upload(str(image_path))
+        media_ids = [media.media_id]
+        print(f"[✓] Uploaded image: {image_path} (media_id: {media.media_id})")
+
+    response = client.create_tweet(text=text, media_ids=media_ids)
     tweet_id = response.data["id"]
     print(f"[✓] Posted! https://x.com/sailorpepe_eth/status/{tweet_id}")
     return tweet_id
@@ -718,14 +731,36 @@ def main():
     print(f"{'═' * 60}\n")
 
     if dry_run:
+        # Still generate the visual in dry-run mode for preview
+        try:
+            from tweet_visuals import generate_visual
+            img = generate_visual(mode, data)
+            if img:
+                print(f"[*] Preview image: {img}")
+        except Exception as e:
+            print(f"[*] Visual generation skipped: {e}")
         print("[*] Dry run — not posting.")
         print("[*] To post: python3 daily_alpha.py")
         print(f"[*] Data summary: {json.dumps({k:v for k,v in data.items() if k != 'raw'}, indent=2, default=str)}")
         return
 
+    # Generate visual (auto or from --image flag)
+    image_path = None
+    if "--image" in sys.argv:
+        idx = sys.argv.index("--image")
+        if idx + 1 < len(sys.argv):
+            image_path = sys.argv[idx + 1]
+    else:
+        # Auto-generate from data
+        try:
+            from tweet_visuals import generate_visual
+            image_path = generate_visual(mode, data)
+        except Exception as e:
+            print(f"[!] Auto visual generation failed: {e}")
+
     # Load env and post
     load_env()
-    post_tweet(tweet)
+    post_tweet(tweet, image_path=image_path)
 
 
 if __name__ == "__main__":

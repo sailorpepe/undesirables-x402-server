@@ -1,0 +1,10 @@
+{
+  "contract_address": "0xc159550e9e751d6E75A0A06Bb04cfA2f59aD636B",
+  "deployer": "0x77B82Fe7ADD725017E106CFE6E26Dc8b37C93Fca",
+  "tx_hash": "c14f4125d38dbd4f615c459336233481e50eb73a6bdbb1c36c2622e6885f9b0c",
+  "chain_id": 4441,
+  "block": 15368566,
+  "gas_used": 579545,
+  "deployed_at": 1780502679.220133,
+  "explorer": "https://liteforge.explorer.caldera.xyz/address/0xc159550e9e751d6E75A0A06Bb04cfA2f59aD636B"
+}
