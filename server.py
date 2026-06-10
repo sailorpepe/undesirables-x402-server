@@ -589,7 +589,7 @@ try:
             "description": "Batch Card Triage: upload multiple card image URLs and get a profit-ranked grading triage. Each card is graded by AI, then scored by expected ROI from professional grading. Returns a ranked list sorted by highest expected profit first. Perfect for dealers and agents evaluating collections.",
             "price": {
                 "amount": "500000",
-                "currency": PAYMENT_TOKEN,
+                "currency": USDC_ADDRESS,
                 "receiver": PAYMENT_ADDRESS,
             },
             "extensions": declare_discovery_extension(
@@ -1812,6 +1812,9 @@ async def _check_alerts():
 
         if should_trigger:
             try:
+                # Re-validate URL at fire time to prevent DNS rebinding attacks
+                if not _is_safe_url(webhook_url):
+                    continue
                 async with httpx.AsyncClient(timeout=10.0) as http:
                     await http.post(webhook_url, json={
                         "alert_id": alert_id,
@@ -2393,7 +2396,6 @@ async def crypto_oracle(
     """
     import os
     import math
-    import random
     
     alchemy_key = os.getenv("ALCHEMY_API_KEY")
     if not alchemy_key:
