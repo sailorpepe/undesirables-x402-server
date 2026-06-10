@@ -963,7 +963,7 @@ async def agent_card():
             {
                 "id": "portfolio_optimize",
                 "name": "Portfolio Optimizer",
-                "description": "Markowitz mean-variance with Kou jump-diffusion Monte Carlo. $0.50 USDC.",
+                "description": "Markowitz mean-variance with Merton jump-diffusion Monte Carlo. $0.50 USDC.",
                 "tags": ["portfolio", "optimization", "finance", "paid"],
             },
             {
@@ -1072,7 +1072,7 @@ WORKFLOW_CATALOG = {
         "triggers": ["portfolio", "diversify", "allocation", "sharpe", "risk", "invest", "budget"],
         "steps": [
             {"endpoint": "/api/v1/search", "price": "free", "purpose": "Look up current prices for each card"},
-            {"endpoint": "/api/v1/portfolio-optimize", "price": "$0.50", "purpose": "Markowitz optimization with Kou jump-diffusion"},
+            {"endpoint": "/api/v1/portfolio-optimize", "price": "$0.50", "purpose": "Markowitz optimization with Merton jump-diffusion"},
         ],
         "total_cost": "$0.50",
     },
@@ -2741,7 +2741,7 @@ async def portfolio_optimize(
         if current_price <= 0:
             current_price = 10.0  # Default if not found
         
-        # Run Monte Carlo simulation (Kou-style with asymmetric jumps)
+        # Run Monte Carlo simulation (Merton jump-diffusion with asymmetric jumps)
         mu = 0.08
         sigma = 0.45
         dt = 1.0 / 252.0
@@ -2752,7 +2752,7 @@ async def portfolio_optimize(
             for _ in range(days):
                 # Base GBM
                 price *= math.exp((mu - 0.5 * sigma**2) * dt + sigma * math.sqrt(dt) * random.gauss(0, 1))
-                # Kou jump: ~2% chance per day of a jump
+                # Merton jump: ~2% chance per day of a jump
                 if random.random() < 0.02:
                     if random.random() < 0.4:  # 40% positive jumps
                         price *= (1 + random.expovariate(1/0.08))
