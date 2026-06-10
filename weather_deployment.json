@@ -1,0 +1,22 @@
+{
+  "contract_address": "0x9955afC8AE25405ed9FcE66c23fa8E02eB3b6696",
+  "contract_name": "WeatherEdgeOracle",
+  "chain_id": 4441,
+  "deployer": "0x77B82Fe7ADD725017E106CFE6E26Dc8b37C93Fca",
+  "first_root": "0x259d49c2c2d2f8f6a268a59de438428d440a478b6d600dc2f9ba166d1060a81e",
+  "total_entries": 10,
+  "cities": [
+    "ATL",
+    "AUS",
+    "CHI",
+    "DEN",
+    "HOU",
+    "LAS",
+    "MIA",
+    "NYC",
+    "PHI",
+    "PHX"
+  ],
+  "deployed_at": 1780762791,
+  "explorer": "https://liteforge.explorer.caldera.xyz/address/0x9955afC8AE25405ed9FcE66c23fa8E02eB3b6696"
+}
