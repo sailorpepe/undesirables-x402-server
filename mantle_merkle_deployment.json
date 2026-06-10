@@ -1,0 +1,9 @@
+{
+  "contract_address": "0x6B31b3735D88b148d47255EdAa4DD74A65D8072c",
+  "chain_id": 5003,
+  "deployer": "0x77B82Fe7ADD725017E106CFE6E26Dc8b37C93Fca",
+  "first_root": "0x0xf8043e3e12ca56a32590c70f6908f39424dfaf6a99bf7719d45fab62a3dc26b0",
+  "total_products": 277134,
+  "deployed_at": 1781026886,
+  "explorer": "https://explorer.sepolia.mantle.xyz/address/0x6B31b3735D88b148d47255EdAa4DD74A65D8072c"
+}
