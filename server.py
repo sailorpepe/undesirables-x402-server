@@ -1666,7 +1666,7 @@ def price_history(
         try:
             cur.execute(
                 """
-                SELECT views_30d, sales_30d, last_price, drift, volatility
+                SELECT drift, volatility, last_price
                 FROM shroomy_stats
                 WHERE product_id = ?
                 """,
@@ -1674,21 +1674,17 @@ def price_history(
             )
             stat_row = cur.fetchone()
             if stat_row:
-                if stat_row[0]:
-                    stats["views_30d"] = stat_row[0]
-                if stat_row[1]:
-                    stats["sales_30d"] = stat_row[1]
-                if stat_row[2]:
+                if stat_row[0] is not None:
+                    stats["drift"] = round(stat_row[0], 4)
+                if stat_row[1] is not None:
+                    stats["volatility"] = round(stat_row[1], 4)
+                if stat_row[2] is not None:
                     stats["last_sale"] = stat_row[2]
-                if stat_row[3] is not None:
-                    stats["drift"] = round(stat_row[3], 4)
-                if stat_row[4] is not None:
-                    stats["volatility"] = round(stat_row[4], 4)
-        except Exception:
+        except Exception as e:
             pass  # shroomy_stats table may not exist
 
         # Get card name
-        cur.execute("SELECT name, clean_name, rarity, group_name FROM cards WHERE product_id = ?", (productId,))
+        cur.execute("SELECT name, clean_name, rarity, group_id FROM cards WHERE product_id = ?", (productId,))
         card_row = cur.fetchone()
         card_info = {}
         if card_row:
@@ -1696,7 +1692,7 @@ def price_history(
             if card_row[2]:
                 card_info["rarity"] = card_row[2]
             if card_row[3]:
-                card_info["set"] = card_row[3]
+                card_info["set_id"] = card_row[3]
 
         # Compute 30D snapshot
         markets = [p["market"] for p in prices if p["market"] > 0]
