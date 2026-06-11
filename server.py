@@ -3424,43 +3424,44 @@ async def arb_grade_scanner(
             if any(s in lower_name for s in ["booster box", "booster pack", "elite trainer", "tin ", " deck", " bundle", " collection"]):
                 continue
 
-            # Check for REAL eBay graded prices first (graded_prices table)
-            graded_value = None
-            graded_source = "estimated"
+            # ONLY use real eBay graded prices — no estimates
             try:
-                gp = cur.execute(
-                    "SELECT grade, median_price FROM graded_prices WHERE product_id = ? AND median_price > 0 ORDER BY median_price DESC LIMIT 1",
+                gp_rows = cur.execute(
+                    "SELECT grade, median_price, low_price, high_price, num_listings FROM graded_prices WHERE product_id = ? AND median_price > 0 ORDER BY median_price DESC",
                     (product_id,),
-                ).fetchone()
-                if gp and gp[1] > 0:
-                    graded_value = gp[1]
-                    graded_source = f"eBay PSA {gp[0]}"
+                ).fetchall()
             except Exception:
-                pass  # graded_prices table may not exist
+                continue  # graded_prices table may not exist
 
-            # Fallback to estimated multiplier if no real data
-            if graded_value is None:
-                if raw_price > 200:
-                    multiplier = 2.0
-                elif raw_price > 80:
-                    multiplier = 1.7
-                elif raw_price > 30:
-                    multiplier = 1.4
-                else:
-                    multiplier = 1.1
-                graded_value = raw_price * multiplier
+            if not gp_rows:
+                continue  # No real data — skip entirely
 
-            profit = graded_value - raw_price - total_cost
+            # Use best grade's median price for ROI calc
+            best_grade, best_median = gp_rows[0][0], gp_rows[0][1]
+            profit = best_median - raw_price - total_cost
             roi = (profit / (raw_price + total_cost)) * 100
 
             if roi >= min_roi:
+                # Build grade breakdown from real eBay data
+                grades = []
+                for g in gp_rows:
+                    grades.append({
+                        "grade": g[0],
+                        "median_price": round(g[1], 2),
+                        "low_price": round(g[2], 2) if g[2] else None,
+                        "high_price": round(g[3], 2) if g[3] else None,
+                        "listings": g[4],
+                    })
+
                 opportunities.append({
                     "card_name": display_name,
                     "raw_price_usd": round(raw_price, 2),
-                    "estimated_graded_value_usd": round(graded_value, 2),
-                    "graded_source": graded_source,
+                    "best_graded_value_usd": round(best_median, 2),
+                    "best_grade": best_grade,
                     "expected_profit_usd": round(profit, 2),
                     "expected_roi_pct": round(roi, 1),
+                    "source": "eBay Browse API",
+                    "grades": grades,
                 })
 
         # Sort by ROI descending
