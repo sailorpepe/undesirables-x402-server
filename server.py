@@ -901,32 +901,63 @@ async def health():
 
 
 used_casper_tx_hashes = set()
+CASPER_CONTRACT_HASH = "0235f90c8dac5ecb30011672fc60ce1e98d51c5adfb5c019f44622bfb344bd77"
 
-@app.get("/api/v1/casper/grade", tags=["Casper x402"])
-async def casper_grade_card(request: Request, tx_hash: Optional[str] = None):
+@app.get("/api/v1/casper/price", tags=["Casper x402"])
+@limiter.limit("60/minute")
+async def casper_price_search(
+    request: Request,
+    query: str = Query(None, description="Card name to search for"),
+    product_id: Optional[int] = Query(None, description="TCGPlayer product ID (direct lookup)"),
+    tx_hash: Optional[str] = Query(None, description="Casper deploy hash proving 1 CSPR payment"),
+):
     """
-    Casper-native x402 micropayment endpoint for AI card grading.
-    Price: 1 CSPR.
-    """
+    💰 **1 CSPR (~$0.002)** — Search 276K+ TCG products with Merkle-verified pricing.
+
+    Returns market prices, low prices, and a cryptographic Merkle proof that the
+    agent can verify against the on-chain root stored in the MerklePriceOracle
+    contract on Casper Testnet.
+
+    **Flow:**
+    1. Send 1 CSPR to the payment address on Casper Testnet
+    2. Call this endpoint with `?query=charizard&tx_hash=<your_deploy_hash>`
+    3. Receive pricing data + Merkle proof
+    4. Optionally verify the proof against the on-chain root via `get_root()` on the contract
+
+    **Verify on-chain:** https://testnet.cspr.live/contract/{contract_hash}
+    """.format(contract_hash=CASPER_CONTRACT_HASH)
+
+    # --- Payment gate ---
     if not tx_hash:
         return JSONResponse(
             status_code=402,
             content={
                 "status": "payment_required",
-                "tool": "Casper AI Card Grading",
-                "description": "AI-powered TCG card grading, returning PSA/BGS predictions and ROI verdicts. Requires native CSPR token micropayment.",
+                "service": "Casper TCG Price Oracle",
+                "description": (
+                    "Search 276K+ TCG products and receive Merkle-verified pricing data. "
+                    "The Merkle root is committed on-chain daily to the MerklePriceOracle "
+                    "contract on Casper Testnet, enabling trustless price verification."
+                ),
                 "price": "1 CSPR",
+                "price_usd": "~$0.002",
                 "network": "cspr:testnet",
-                "asset": "CSPR on Casper Testnet",
-                "payment_address": CASPER_PAYMENT_ADDRESS or "Missing Casper Wallet",
-                "how_to_pay": f"Send 1 CSPR to {CASPER_PAYMENT_ADDRESS} on Casper Testnet, then retry this request with the ?tx_hash=<your_transaction_hash> query parameter."
-            }
+                "asset": "CSPR",
+                "payment_address": CASPER_PAYMENT_ADDRESS or "Wallet not loaded",
+                "contract_hash": CASPER_CONTRACT_HASH,
+                "explorer": f"https://testnet.cspr.live/contract/{CASPER_CONTRACT_HASH}",
+                "how_to_pay": (
+                    f"Send 1 CSPR to {CASPER_PAYMENT_ADDRESS} on Casper Testnet, "
+                    "then retry with ?tx_hash=<your_deploy_hash>"
+                ),
+                "example": "/api/v1/casper/price?query=charizard&tx_hash=abc123...",
+            },
         )
-    
+
     if tx_hash in used_casper_tx_hashes:
         raise HTTPException(status_code=400, detail="Transaction hash already used for payment.")
 
-    # Verify transaction via casper_proxy.py
+    # --- Verify CSPR transfer on-chain via local proxy ---
     try:
         async with httpx.AsyncClient() as client:
             resp = await client.post(
@@ -935,9 +966,9 @@ async def casper_grade_card(request: Request, tx_hash: Optional[str] = None):
                     "jsonrpc": "2.0",
                     "id": 1,
                     "method": "info_get_deploy",
-                    "params": {"deploy_hash": tx_hash}
+                    "params": {"deploy_hash": tx_hash},
                 },
-                timeout=10.0
+                timeout=10.0,
             )
             data = resp.json()
     except Exception as e:
@@ -946,56 +977,132 @@ async def casper_grade_card(request: Request, tx_hash: Optional[str] = None):
     if "error" in data:
         raise HTTPException(status_code=400, detail=f"Casper node error: {data['error'].get('message')}")
 
-    deploy = data.get("result", {}).get("deploy", {})
-    execution_results = data.get("result", {}).get("execution_results", [])
+    # Check execution info (Casper 2.x format)
+    result = data.get("result", {})
+    execution_info = result.get("execution_info", {})
+    exec_result = execution_info.get("execution_result", {})
 
-    if not execution_results:
-        raise HTTPException(status_code=400, detail="Transaction is pending or not found.")
-
-    # Check if execution was successful
-    exec_res = execution_results[0].get("result", {})
-    if "Failure" in exec_res:
+    # Handle both V1 and V2 execution result formats
+    if exec_result.get("Version2"):
+        v2 = exec_result["Version2"]
+        if v2.get("error_message"):
+            raise HTTPException(status_code=400, detail=f"Transaction failed: {v2['error_message']}")
+    elif exec_result.get("Success") is None and exec_result.get("Failure"):
         raise HTTPException(status_code=400, detail="Transaction failed execution.")
 
-    # Verify the transfer
+    # Verify amount from the deploy's Transfer session
+    deploy = result.get("deploy", {})
     session = deploy.get("session", {})
     transfer = session.get("Transfer", {})
-    if not transfer:
-        raise HTTPException(status_code=400, detail="Transaction does not contain a Transfer action.")
-    
-    # Extract args
-    args = transfer.get("args", [])
-    amount = 0
-    target = ""
-    for arg in args:
-        if arg[0] == "amount":
-            amount = int(arg[1].get("parsed", "0"))
-        elif arg[0] == "target":
-            target = arg[1].get("parsed", "")
 
-    # CSPR is 10^9 motes. 1 CSPR = 1,000,000,000 motes
-    if amount < 1000000000:
-        raise HTTPException(status_code=402, detail=f"Insufficient payment. Required 1 CSPR (1,000,000,000 motes), but got {amount} motes.")
-    
-    # The target parsed is usually the account hash, but sometimes we match by public key.
-    # We will just verify it's not empty for now, or match the exact account hash if needed.
-    # For a minimal PoC:
+    if transfer:
+        args = transfer.get("args", [])
+        amount = 0
+        for arg in args:
+            if arg[0] == "amount":
+                amount = int(arg[1].get("parsed", "0"))
+        if amount < 1000000000:
+            raise HTTPException(
+                status_code=402,
+                detail=f"Insufficient payment. Required 1 CSPR (1,000,000,000 motes), got {amount} motes.",
+            )
+
     used_casper_tx_hashes.add(tx_hash)
 
-    # Return simulated grading data (since we don't have the MCP MCP bridge running directly here without full MCP)
+    # --- Validate input ---
+    if not query and product_id is None:
+        raise HTTPException(status_code=400, detail="Provide either ?query=<card name> or ?product_id=<id>")
+
+    # --- Search the database ---
+    db = _get_db()
+    if not db:
+        raise HTTPException(status_code=503, detail="TCG database not available")
+
+    try:
+        cur = db.cursor()
+        max_date = cur.execute("SELECT MAX(date) FROM price_history").fetchone()[0]
+
+        if product_id is not None:
+            cur.execute(
+                """
+                SELECT c.product_id, c.name, c.clean_name, c.category_id,
+                       p.market_price, p.low_price, p.mid_price, p.date
+                FROM cards c
+                LEFT JOIN price_history p ON c.product_id = p.product_id AND p.date = ?
+                WHERE c.product_id = ?
+                """,
+                (max_date, product_id),
+            )
+        else:
+            safe_q = query.replace("%", "\\%").replace("_", "\\_")
+            cur.execute(
+                """
+                SELECT c.product_id, c.name, c.clean_name, c.category_id,
+                       p.market_price, p.low_price, p.mid_price, p.date
+                FROM cards c
+                LEFT JOIN price_history p ON c.product_id = p.product_id AND p.date = ?
+                WHERE (c.name LIKE ? OR c.clean_name LIKE ?)
+                ORDER BY COALESCE(p.market_price, 0) DESC
+                LIMIT 10
+                """,
+                (max_date, f"%{safe_q}%", f"%{safe_q}%"),
+            )
+
+        rows = cur.fetchall()
+    finally:
+        db.close()
+
+    if not rows:
+        return {"status": "ok", "tx_hash": tx_hash, "query": query or str(product_id), "data": {"results": [], "total": 0}}
+
+    # --- Build results with Merkle proofs ---
+    global MERKLE_CACHE
+    if MERKLE_CACHE is None:
+        _load_merkle_cache()
+
+    results = []
+    for r in rows:
+        pid = r[0]
+        cat_id = r[3]
+        cat_name = next((k for k, v in GAME_CATEGORIES.items() if v == cat_id), None)
+
+        entry = {
+            "product_id": pid,
+            "name": r[1] or r[2],
+            "category": cat_name.title() if cat_name else None,
+            "market_price": r[4] or 0,
+            "low_price": r[5] or 0,
+            "mid_price": r[6] or 0,
+            "price_date": r[7],
+        }
+
+        # Attach Merkle proof if cache is available
+        if MERKLE_CACHE:
+            product_index = MERKLE_CACHE.get("product_index", {})
+            leaf_index = product_index.get(str(pid))
+            if leaf_index is not None:
+                tree = MERKLE_CACHE.get("tree", [])
+                proof = _compute_merkle_proof(tree, leaf_index)
+                entry["merkle"] = {
+                    "leaf_index": leaf_index,
+                    "leaf": MERKLE_CACHE["leaves"][leaf_index] if leaf_index < len(MERKLE_CACHE.get("leaves", [])) else None,
+                    "proof": proof,
+                }
+
+        results.append(entry)
+
     return {
         "status": "ok",
         "tx_hash": tx_hash,
-        "message": "Payment verified successfully via Casper Testnet.",
+        "query": query or str(product_id),
         "data": {
-            "prediction": "PSA 10",
-            "centering": {"top_bottom": 50.2, "left_right": 49.8},
-            "corners": "Sharp",
-            "edges": "Clean",
-            "surface": "Pristine",
-            "roi_verdict": "GO",
-            "merkle_proof": "0xabc123..."
-        }
+            "results": results,
+            "total": len(results),
+            "merkle_root": MERKLE_CACHE.get("root") if MERKLE_CACHE else None,
+            "data_date": MERKLE_CACHE.get("data_date") if MERKLE_CACHE else None,
+            "casper_contract": CASPER_CONTRACT_HASH,
+            "verify_on_chain": f"https://testnet.cspr.live/contract/{CASPER_CONTRACT_HASH}",
+        },
     }
 
 
@@ -1060,6 +1167,7 @@ async def ai_plugin():
                 "/api/v1/phygital/arbitrage": "$0.10",
                 "/api/v1/phygital/search": "free",
                 "/api/v1/phygital/stats": "free",
+                "/api/v1/casper/price": "1 CSPR (~$0.002)",
             },
         },
     }
@@ -1347,6 +1455,11 @@ def search_tcg_products(
     source: Optional[str] = Query(None, description="Source identifier (e.g., 'widget')"),
 ):
     """
+    🆓 **FREE** — Search 432K+ TCG products across 13 game categories.
+
+    Returns product names, sets, and IDs from the TCGCSV database.
+    Uses FTS5 full-text search with LIKE fallback.
+    """
     db = _get_db()
     if not db:
         raise HTTPException(status_code=503, detail="TCG database not available")
@@ -1432,51 +1545,7 @@ def search_tcg_products(
         # Check if internal caller
         ua = request.headers.get("user-agent", "")
         is_internal = "TheUndesirables-Site" in ua
-=======
-    🆓 **FREE** — Search 432K+ TCG products across 13 game categories.
-
-    Returns product names, sets, and IDs from the TCGCSV database.
-    Our own frontend gets full results with prices; external agents get
-    free tier (3 results, no prices).
-    """
-    conn = _get_db()
-    if not conn:
-        raise HTTPException(status_code=503, detail="TCG database not available")
-
-    # Internal requests from our site get full data
-    ua = request.headers.get("user-agent", "")
-    is_internal = "TheUndesirables-Site" in ua
-    is_widget = source == "widget"
-
-    try:
-        cur = conn.cursor()
-        safe_query = query.replace("%", "\\%").replace("_", "\\_")
-
-        # Build query with optional game filter
-        sql = """
-            SELECT DISTINCT c.product_id, c.name, c.clean_name, c.category_id,
-                   p.market_price, p.low_price, p.mid_price, p.date
-            FROM cards c
-            LEFT JOIN price_history p ON c.product_id = p.product_id
-                AND p.date = (SELECT MAX(date) FROM price_history)
-            WHERE (c.name LIKE ? OR c.clean_name LIKE ?)
-        """
-        params = [f"%{safe_query}%", f"%{safe_query}%"]
-
-        if game:
-            game_lower = game.lower().strip()
-            cat_id = GAME_CATEGORIES.get(game_lower)
-            if cat_id:
-                sql += " AND c.category_id = ?"
-                params.append(cat_id)
-
-        sql += " ORDER BY COALESCE(p.market_price, 0) DESC LIMIT ?"
-        params.append(limit)
-
-        cur.execute(sql, params)
-        rows = cur.fetchall()
->>>>>>> github/main
-
+        is_widget = source == "widget"
         if is_internal:
             # Full results with prices for our own site
             results = []
