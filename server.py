@@ -3361,82 +3361,112 @@ async def arb_grade_scanner(
     db = _get_db()
     if not db:
         raise HTTPException(status_code=503, detail="TCG database not available")
-    
+
     try:
-        # Query cards in the price range for the specified game
-        rows = db.execute(
-            """
-            SELECT c.clean_name, c.group_name, c.rarity, c.number,
-                   COALESCE(ph.market_price, ss.last_price) as price,
-                   g.display_name as game_name
-            FROM cards c
-            LEFT JOIN price_history ph ON c.product_id = ph.product_id
-            LEFT JOIN shroomy_stats ss ON c.product_id = ss.product_id
-            LEFT JOIN groups g ON c.group_id = g.group_id
-            WHERE g.display_name LIKE ?
-              AND COALESCE(ph.market_price, ss.last_price) BETWEEN ? AND ?
-              AND COALESCE(ph.market_price, ss.last_price) > 0
-            ORDER BY COALESCE(ph.market_price, ss.last_price) DESC
-            LIMIT 200
-            """,
-            [f"%{game}%", min_raw_price, max_raw_price]
-        ).fetchall()
-        
+        cur = db.cursor()
+
+        # Map game name to category_id (groups table no longer exists)
+        cat_id = _game_to_category(game)
+
+        # Pre-fetch max date for price join
+        max_date = cur.execute("SELECT MAX(date) FROM price_history").fetchone()[0]
+
+        # Query cards using only columns that exist in the current schema
+        if cat_id:
+            rows = cur.execute(
+                """
+                SELECT c.product_id, c.name, c.clean_name,
+                       p.market_price as price
+                FROM cards c
+                JOIN price_history p ON c.product_id = p.product_id
+                    AND p.date = ?
+                WHERE c.category_id = ?
+                  AND p.market_price BETWEEN ? AND ?
+                  AND p.market_price > 0
+                ORDER BY p.market_price DESC
+                LIMIT 200
+                """,
+                (max_date, cat_id, min_raw_price, max_raw_price),
+            ).fetchall()
+        else:
+            rows = cur.execute(
+                """
+                SELECT c.product_id, c.name, c.clean_name,
+                       p.market_price as price
+                FROM cards c
+                JOIN price_history p ON c.product_id = p.product_id
+                    AND p.date = ?
+                WHERE p.market_price BETWEEN ? AND ?
+                  AND p.market_price > 0
+                ORDER BY p.market_price DESC
+                LIMIT 200
+                """,
+                (max_date, min_raw_price, max_raw_price),
+            ).fetchall()
+
         if not rows:
             return {
                 "status": "ok",
                 "tool": "arb_grade_scanner",
-                "data": {"opportunities": [], "message": f"No cards found for {game} in ${min_raw_price}-${max_raw_price} range"}
+                "data": {"opportunities": [], "message": f"No cards found for {game} in ${min_raw_price}-${max_raw_price} range"},
             }
-        
+
         opportunities = []
-        grading_fee = 20  # PSA economy
-        shipping = 15
-        total_cost = grading_fee + shipping
-        
+        grading_fee = 100  # PSA Regular ($79.99 + $20 shipping) — economy PAUSED
+        total_cost = grading_fee
+
         for row in rows:
-            name, set_name, rarity, number, raw_price, game_name = row
-            
-            # Estimate likely grade based on rarity and price tier
-            # Higher-value cards tend to be better preserved
-            if raw_price > 200:
-                estimated_grade = 8.5
-                multiplier = 2.2
-            elif raw_price > 80:
-                estimated_grade = 8.0
-                multiplier = 1.8
-            elif raw_price > 30:
-                estimated_grade = 7.5
-                multiplier = 1.4
-            else:
-                estimated_grade = 7.0
-                multiplier = 1.1
-            
-            # Rarity bonus — ultra rares and secret rares grade better on average
-            if rarity and any(r in str(rarity).lower() for r in ["secret", "ultra", "hyper", "alt art", "illustration"]):
-                multiplier *= 1.15
-                estimated_grade = min(10, estimated_grade + 0.5)
-            
-            graded_value = raw_price * multiplier
+            product_id, name, clean_name, raw_price = row
+            display_name = name or clean_name
+
+            # Skip sealed products (booster boxes, tins, etc.)
+            lower_name = display_name.lower() if display_name else ""
+            if any(s in lower_name for s in ["booster box", "booster pack", "elite trainer", "tin ", " deck", " bundle", " collection"]):
+                continue
+
+            # Check for REAL eBay graded prices first (graded_prices table)
+            graded_value = None
+            graded_source = "estimated"
+            try:
+                gp = cur.execute(
+                    "SELECT grade, median_price FROM graded_prices WHERE product_id = ? AND median_price > 0 ORDER BY median_price DESC LIMIT 1",
+                    (product_id,),
+                ).fetchone()
+                if gp and gp[1] > 0:
+                    graded_value = gp[1]
+                    graded_source = f"eBay PSA {gp[0]}"
+            except Exception:
+                pass  # graded_prices table may not exist
+
+            # Fallback to estimated multiplier if no real data
+            if graded_value is None:
+                if raw_price > 200:
+                    multiplier = 2.0
+                elif raw_price > 80:
+                    multiplier = 1.7
+                elif raw_price > 30:
+                    multiplier = 1.4
+                else:
+                    multiplier = 1.1
+                graded_value = raw_price * multiplier
+
             profit = graded_value - raw_price - total_cost
             roi = (profit / (raw_price + total_cost)) * 100
-            
+
             if roi >= min_roi:
                 opportunities.append({
-                    "card_name": name,
-                    "set": set_name or "Unknown Set",
-                    "rarity": rarity or "Unknown",
+                    "card_name": display_name,
                     "raw_price_usd": round(raw_price, 2),
-                    "estimated_grade": estimated_grade,
                     "estimated_graded_value_usd": round(graded_value, 2),
+                    "graded_source": graded_source,
                     "expected_profit_usd": round(profit, 2),
                     "expected_roi_pct": round(roi, 1),
                 })
-        
+
         # Sort by ROI descending
         opportunities.sort(key=lambda x: x["expected_roi_pct"], reverse=True)
         opportunities = opportunities[:limit]
-        
+
         return {
             "status": "ok",
             "tool": "arb_grade_scanner",
@@ -3446,9 +3476,9 @@ async def arb_grade_scanner(
                 "price_range": f"${min_raw_price} - ${max_raw_price}",
                 "min_roi_threshold": f"{min_roi}%",
                 "opportunities_found": len(opportunities),
-                "grading_cost_assumed": f"${total_cost} (PSA economy + shipping)",
+                "grading_cost_assumed": f"${total_cost} (PSA Regular — economy paused)",
                 "opportunities": opportunities,
-            }
+            },
         }
     finally:
         db.close()
