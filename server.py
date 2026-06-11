@@ -1682,15 +1682,13 @@ def price_history(
             pass  # shroomy_stats table may not exist
 
         # Get card name
-        cur.execute("SELECT name, clean_name, rarity, category_id FROM cards WHERE product_id = ?", (productId,))
+        cur.execute("SELECT name, clean_name, category_id FROM cards WHERE product_id = ?", (productId,))
         card_row = cur.fetchone()
         card_info = {}
         if card_row:
             card_info["name"] = card_row[0] or card_row[1]
             if card_row[2]:
-                card_info["rarity"] = card_row[2]
-            if card_row[3]:
-                card_info["category_id"] = card_row[3]
+                card_info["category_id"] = card_row[2]
 
         # Compute 30D snapshot
         markets = [p["market"] for p in prices if p["market"] > 0]
