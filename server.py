@@ -230,7 +230,7 @@ def _market_snapshot(args: dict) -> dict:
                 WHERE p.market_price > 0 AND c.category_id = ?
                     AND p.date = ?
                 ORDER BY p.market_price DESC
-                LIMIT 10
+                LIMIT 50
                 """,
                 (cat_id, max_date),
             )
@@ -243,7 +243,7 @@ def _market_snapshot(args: dict) -> dict:
                 WHERE p.market_price > 0
                     AND p.date = ?
                 ORDER BY p.market_price DESC
-                LIMIT 10
+                LIMIT 50
                 """,
                 (max_date,),
             )
@@ -1590,7 +1590,7 @@ def search_tcg_products(
                 "data": {"results": limited},
             }
     finally:
-        conn.close()
+        db.close()
 
 
 @app.get("/api/v1/market", tags=["Paid"])
