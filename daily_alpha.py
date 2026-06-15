@@ -1,31 +1,22 @@
 #!/usr/bin/env python3
 """
 Daily Alpha Bot — Posts TCG & prediction market alpha to X (@sailorpepe_eth)
-Runs Mon-Sat. Sunday off. Each day rotates through different alpha sources.
+Runs Mon-Sat. Sunday off.
 
 Schedule:
-  Mon — Prediction Market Arb (Kalshi vs Polymarket)
-  Tue — Grading ROI Scanner (which cards are worth grading?)
-  Wed — Weather Edge (NWS vs Kalshi weather derivatives)
-  Thu — Courtyard Arb (tokenized vs raw card spreads)
-  Fri — Monte Carlo Forecast (price simulations on popular cards)
-  Sat — Weekly Digest (best signals from the week)
+  Mon/Wed/Fri — Weather Edge (NWS vs Kalshi weather derivatives)
+  Tue/Thu/Sat — Monte Carlo Forecast (price simulations on popular cards)
   Sun — OFF
 
 Usage:
     python3 daily_alpha.py --dry-run          # Preview without posting
     python3 daily_alpha.py                    # Post today's alpha
-    python3 daily_alpha.py --mode arb-cross   # Force specific mode
-    python3 daily_alpha.py --mode arb-grade
-    python3 daily_alpha.py --mode arb-weather
-    python3 daily_alpha.py --mode courtyard
-    python3 daily_alpha.py --mode simulate
-    python3 daily_alpha.py --mode digest
+    python3 daily_alpha.py --mode arb-weather # Force weather mode
+    python3 daily_alpha.py --mode simulate    # Force simulate mode
 
 Data sources (all LOCAL — no x402 payment needed):
     - SQLite: ~/Documents/undesirables-mcp-server/.cache/market_memory.sqlite
     - Shroomy Oracle: http://127.0.0.1:3000 (Next.js on Mac Mini)
-    - Courtyard data: tcg-oracle-tools/data/courtyard_enriched_listings.json
     - X API: tweepy (keys from .env)
 """
 
@@ -42,19 +33,17 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 SCRIPT_DIR = Path(__file__).parent
 DB_PATH = Path.home() / "Documents" / "undesirables-mcp-server" / ".cache" / "market_memory.sqlite"
-COURTYARD_DATA = Path.home() / "Documents" / "tcg-oracle-tools" / "data" / "courtyard_enriched_listings.json"
-COURTYARD_LIVE = Path.home() / "Documents" / "tcg-oracle-tools" / "data" / "courtyard_live_listings.json"
 SHROOMY_URL = "http://127.0.0.1:3000"
 ORACLE_URL = "https://oracle.the-undesirables.com"
 
 # Day-of-week rotation (0=Mon, 5=Sat, 6=Sun=OFF)
 DAY_SCHEDULE = {
-    0: "arb-cross",    # Monday
-    1: "arb-grade",    # Tuesday
+    0: "arb-weather",  # Monday
+    1: "simulate",     # Tuesday
     2: "arb-weather",  # Wednesday
-    3: "courtyard",    # Thursday
-    4: "simulate",     # Friday
-    5: "digest",       # Saturday
+    3: "simulate",     # Thursday
+    4: "arb-weather",  # Friday
+    5: "simulate",     # Saturday
     6: None,           # Sunday — OFF
 }
 
@@ -62,50 +51,6 @@ DAY_SCHEDULE = {
 # ---------------------------------------------------------------------------
 # Data Fetchers
 # ---------------------------------------------------------------------------
-def fetch_arb_cross():
-    """Kalshi vs Polymarket cross-platform arbitrage — via Shroomy Oracle."""
-    import requests
-    try:
-        r = requests.get(f"{SHROOMY_URL}/api/arbs?scanType=cross-platform", timeout=30)
-        data = r.json()
-        opps = data.get("opportunities", data.get("arbs", []))
-        if isinstance(opps, list):
-            real_opps = [o for o in opps if float(o.get("edge_percent", o.get("edge", 0))) > 1.0]
-            # Sort by edge descending
-            real_opps.sort(key=lambda x: float(x.get("edge_percent", x.get("edge", 0))), reverse=True)
-            return {
-                "type": "arb-cross",
-                "count": len(real_opps),
-                "total_scanned": data.get("total_markets", data.get("totalScanned", len(opps))),
-                "platforms": "Kalshi × Polymarket",
-                "top_opps": real_opps[:5],
-                "raw": data,
-            }
-    except Exception as e:
-        print(f"[!] arb-cross fetch failed: {e}")
-    return None
-
-
-def fetch_arb_basket():
-    """Basket arbitrage — guaranteed NO yield on Polymarket/Kalshi."""
-    import requests
-    try:
-        r = requests.get(f"{SHROOMY_URL}/api/arbs?scanType=basket", timeout=30)
-        data = r.json()
-        arbs = data.get("basketArbs", data.get("arbs", []))
-        if isinstance(arbs, list):
-            real = [a for a in arbs if a.get("eventTitle")]
-            return {
-                "type": "arb-basket",
-                "count": len(real),
-                "events": real[:5],
-                "raw": data,
-            }
-    except Exception as e:
-        print(f"[!] arb-basket fetch failed: {e}")
-    return None
-
-
 def fetch_arb_weather():
     """NWS vs Kalshi weather derivative edge scanner."""
     import requests
@@ -143,114 +88,6 @@ def fetch_arb_weather():
     except Exception as e:
         print(f"[!] arb-weather fetch failed: {e}")
     return None
-
-
-def fetch_arb_grade():
-    """Scan SQLite for cards where grading ROI beats $100 cost using REAL graded prices."""
-    # PSA pricing as of June 2026:
-    #   Economy/Value tiers: PAUSED (10M card backlog)
-    #   Regular: $79.99 + ~$20 shipping/insurance = ~$100 total
-    #   Express: $149, Super Express: $349, Walk-Through: $599
-    PSA_TOTAL_COST = 100  # Regular tier + shipping
-    if not DB_PATH.exists():
-        print(f"[!] DB not found: {DB_PATH}")
-        return None
-
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
-    try:
-        # Use REAL graded prices from eBay (graded_prices table)
-        # instead of estimated multipliers
-        query = """
-        SELECT 
-            gp.card_name,
-            gp.grade,
-            gp.median_price as graded_price,
-            gp.num_listings,
-            ph.market_price as raw_price,
-            ROUND(gp.median_price - ph.market_price - 100, 2) as expected_profit,
-            ROUND(((gp.median_price - ph.market_price - 100) 
-                   / (ph.market_price + 100)) * 100, 0) as roi_pct
-        FROM graded_prices gp
-        JOIN price_history ph ON gp.product_id = ph.product_id
-        WHERE ph.date = (SELECT MAX(date) FROM price_history)
-          AND gp.median_price IS NOT NULL
-          AND ph.market_price > 10
-          AND gp.grade IN ('PSA 10', 'PSA 9')
-          AND (gp.median_price - ph.market_price - 100) > 0
-          AND gp.num_listings >= 2
-          -- Exclude sealed products (can't be PSA graded)
-          AND gp.card_name NOT LIKE '%Booster Box%'
-          AND gp.card_name NOT LIKE '%Booster Pack%'
-          AND gp.card_name NOT LIKE '%Starter Deck%'
-          AND gp.card_name NOT LIKE '%Display%'
-          AND gp.card_name NOT LIKE '%Elite Trainer%'
-          AND gp.card_name NOT LIKE '%Collection%'
-          AND gp.card_name NOT LIKE '%Bundle%'
-          AND gp.card_name NOT LIKE '%Tin %'
-          AND gp.card_name NOT LIKE '%Case%'
-          AND gp.card_name NOT LIKE '%Premium Collection%'
-        ORDER BY roi_pct DESC
-        LIMIT 20
-        """
-        rows = conn.execute(query).fetchall()
-        opps = [dict(r) for r in rows]
-        good = [o for o in opps if o["roi_pct"] and o["roi_pct"] > 30]
-        return {
-            "type": "arb-grade",
-            "count": len(good),
-            "top_cards": good[:5],
-            "price_range": f"${min(o['raw_price'] for o in good):.0f}-${max(o['raw_price'] for o in good):.0f}" if good else "N/A",
-            "data_source": "eBay graded listings",
-        }
-    except Exception as e:
-        print(f"[!] arb-grade query failed: {e}")
-        return None
-    finally:
-        conn.close()
-
-
-def fetch_courtyard():
-    """Courtyard vs TCGPlayer — tokenized card arbitrage."""
-    # Try enriched listings first, then live listings
-    data_path = COURTYARD_DATA if COURTYARD_DATA.exists() else COURTYARD_LIVE
-    if not data_path.exists():
-        print(f"[!] Courtyard data not found at:")
-        print(f"    {COURTYARD_DATA}")
-        print(f"    {COURTYARD_LIVE}")
-        return None
-
-    try:
-        with open(data_path) as f:
-            data = json.load(f)
-
-        # Get listing prices
-        listings = []
-        for card in data:
-            price = card.get("listing_usd", card.get("listing_price_usd", 0))
-            name = card.get("name", "")
-            category = card.get("category", "")
-            grade = card.get("grade", "")
-            if price and price > 0 and name:
-                listings.append({
-                    "name": name,
-                    "listing_usd": price,
-                    "category": category,
-                    "grade": grade,
-                })
-
-        listings.sort(key=lambda x: x["listing_usd"])
-
-        return {
-            "type": "courtyard",
-            "total_listings": len(listings),
-            "cheapest": listings[:5] if listings else [],
-            "categories": list(set(c["category"] for c in listings if c["category"])),
-            "source_file": data_path.name,
-        }
-    except Exception as e:
-        print(f"[!] Courtyard data parse failed: {e}")
-        return None
 
 
 def fetch_simulate():
@@ -345,104 +182,11 @@ def fetch_simulate():
         conn.close()
 
 
-def fetch_digest():
-    """Saturday digest — combine signals from multiple sources."""
-    results = {}
-
-    grade = fetch_arb_grade()
-    if grade and grade["count"] > 0:
-        results["grade"] = grade
-
-    court = fetch_courtyard()
-    if court and court["total_listings"] > 0:
-        results["courtyard"] = court
-
-    basket = fetch_arb_basket()
-    if basket and basket["count"] > 0:
-        results["basket"] = basket
-
-    sim = fetch_simulate()
-    if sim:
-        results["sim"] = sim
-
-    weather = fetch_arb_weather()
-    if weather and weather["count"] > 0:
-        results["weather"] = weather
-
-    return {
-        "type": "digest",
-        "sources": results,
-    }
 
 
 # ---------------------------------------------------------------------------
 # Tweet Formatters — LONG FORMAT with real data breakdowns
 # ---------------------------------------------------------------------------
-def format_arb_cross(data):
-    """Prediction market cross-platform arb — long format."""
-    now = datetime.now().strftime("%B %d, %Y")
-    lines = [f"⚡ Cross-Platform Arb Scanner — {now}\n"]
-    lines.append(f"Our oracle just scanned {data.get('total_scanned', '?')} prediction markets across Kalshi and Polymarket.\n")
-
-    if data["count"] > 0:
-        lines.append(f"🎯 {data['count']} cross-platform edges detected:\n")
-        for i, opp in enumerate(data["top_opps"][:3]):
-            event = opp.get("event", opp.get("eventTitle", opp.get("market", "?")))
-            edge = float(opp.get("edge_percent", opp.get("edge", 0)))
-            if len(event) > 60:
-                event = event[:57] + "..."
-            lines.append(f"{'🥇🥈🥉'[i]} {event}")
-            lines.append(f"   Edge: {edge:.1f}%\n")
-
-        lines.append("Same event, different platforms, different prices.")
-        lines.append("That's a textbook arbitrage.\n")
-    else:
-        lines.append("📊 No actionable edges today — markets are tight.")
-        lines.append("Kalshi × Polymarket spreads all under 1%.")
-        lines.append("When the market is this efficient, the scanner saves you time.\n")
-
-    lines.append("Full scanner with all markets:")
-    lines.append("🔍 oracle.the-undesirables.com\n")
-    lines.append("🍄 @undesirables_ai")
-    lines.append("#Kalshi #Polymarket #PredictionMarkets #Arbitrage")
-    return "\n".join(lines)
-
-
-def format_arb_grade(data):
-    """Grading ROI scanner — long format with real graded prices."""
-    now = datetime.now().strftime("%B %d, %Y")
-    lines = [f"🃏 Grading ROI Scanner — {now}\n"]
-
-    if data["count"] > 0:
-        lines.append(f"Scanned TCGPlayer raw prices vs eBay PSA graded comps.")
-        lines.append(f"{data['count']} cards where grading produces positive ROI:\n")
-
-        for i, card in enumerate(data["top_cards"][:3]):
-            name = card.get("card_name", "?")
-            if len(name) > 40:
-                name = name[:37] + "..."
-            roi = card.get("roi_pct", 0)
-            raw = card.get("raw_price", 0)
-            graded = card.get("graded_price", 0)
-            profit = card.get("expected_profit", 0)
-            grade = card.get("grade", "PSA 10")
-            listings = card.get("num_listings", 0)
-            lines.append(f"{'🥇🥈🥉'[i]} {name}")
-            lines.append(f"   Raw: ${raw:,.2f} → {grade}: ${graded:,.0f} ({listings} comps)")
-            lines.append(f"   +${profit:,.0f} profit ({roi:.0f}% ROI)\n")
-
-        lines.append(f"💡 PSA Regular tier = $79.99 + ~$20 shipping = ~$100 total.")
-        lines.append(f"(Economy/Value tiers paused since June 2 — 10M card backlog.)")
-        lines.append(f"The question isn't IF you should grade — it's WHICH cards beat the fee.\n")
-    else:
-        lines.append("📉 No grading opportunities above 30% ROI today.")
-        lines.append("Market is efficiently priced. Check back tomorrow.\n")
-
-    lines.append("Full data: http://oracle.the-undesirables.com\n")
-    lines.append("🍄")
-    lines.append("@undesirables_ai")
-    lines.append("#PSA #CardGrading #TCG #TradingCards #Pokemon")
-    return "\n".join(lines)
 
 
 def format_arb_weather(data):
@@ -484,36 +228,6 @@ def format_arb_weather(data):
     return "\n".join(lines)
 
 
-def format_courtyard(data):
-    """Courtyard tokenized card arb — long format."""
-    now = datetime.now().strftime("%B %d, %Y")
-    lines = [f"💎 Courtyard Arb Scanner — {now}\n"]
-    lines.append(f"Scanned {data['total_listings']} live Courtyard.io listings against TCGPlayer raw prices.\n")
-
-    categories = data.get("categories", [])
-    if categories:
-        lines.append(f"Categories: {', '.join(categories[:5])}\n")
-
-    cheapest = data.get("cheapest", [])
-    if cheapest:
-        lines.append("Cheapest tokenized graded cards right now:\n")
-        for card in cheapest[:3]:
-            name = card["name"]
-            if len(name) > 50:
-                name = name[:47] + "..."
-            price = card["listing_usd"]
-            grade = card.get("grade", "")
-            grade_str = f" ({grade})" if grade else ""
-            lines.append(f"  💰 ${price:.2f} — {name}{grade_str}")
-
-        lines.append(f"\nEvery card is vaulted by Brink's, insured, and tradeable on Polygon.\n")
-
-    lines.append("Full arb scanner: oracle.the-undesirables.com\n")
-    lines.append("🍄 @undesirables_ai")
-    lines.append("#Courtyard #TCG #TradingCards #PhygitalCards")
-    return "\n".join(lines)
-
-
 def format_simulate(data):
     """Monte Carlo simulation — long format with full distribution."""
     now = datetime.now().strftime("%B %d, %Y")
@@ -548,75 +262,14 @@ def format_simulate(data):
     return "\n".join(lines)
 
 
-def format_digest(data):
-    """Saturday weekly digest — long format combining all sources."""
-    now = datetime.now().strftime("%B %d, %Y")
-    lines = [f"📊 Weekly Alpha Digest — {now}\n"]
-    lines.append("Here's what our oracles found this week:\n")
-
-    sources = data.get("sources", {})
-
-    if "grade" in sources:
-        g = sources["grade"]
-        top = g["top_cards"][0] if g["top_cards"] else None
-        lines.append(f"🃏 Grading: {g['count']} cards worth grading")
-        if top:
-            lines.append(f"   Best: {top['card_name'][:35]} — {top['roi_pct']:.0f}% ROI")
-        lines.append("")
-
-    if "weather" in sources:
-        w = sources["weather"]
-        top_city = w["cities"][0] if w["cities"] else None
-        lines.append(f"🌦️ Weather: {w['count']} NWS vs Kalshi edges")
-        if top_city:
-            lines.append(f"   Top: {top_city['name']} — {top_city['top_edge']}% edge")
-        lines.append("")
-
-    if "basket" in sources:
-        b = sources["basket"]
-        lines.append(f"🧺 Basket arb: {b['count']} guaranteed-yield opportunities")
-        lines.append("")
-
-    if "courtyard" in sources:
-        c = sources["courtyard"]
-        lines.append(f"💎 Courtyard: {c['total_listings']} active listings scanned")
-        lines.append("")
-
-    if "sim" in sources:
-        s = sources["sim"]
-        name = s["card_name"]
-        if len(name) > 30:
-            name = name[:27] + "..."
-        lines.append(f"📈 Forecast: {name}")
-        lines.append(f"   ${s['current_price']:.2f} → {s['upside_prob']:.0f}% chance of gain in 30d")
-        lines.append("")
-
-    if not sources:
-        lines.append("Quiet week — markets efficiently priced across the board.\n")
-
-    lines.append("All of this runs 24/7 on local compute. No cloud. No API keys to the kingdom.\n")
-    lines.append("Full data: oracle.the-undesirables.com\n")
-    lines.append("🍄 @undesirables_ai")
-    lines.append("#TCG #TradingCards #PredictionMarkets #WeeklyDigest")
-    return "\n".join(lines)
-
-
 FORMATTERS = {
-    "arb-cross": format_arb_cross,
-    "arb-grade": format_arb_grade,
     "arb-weather": format_arb_weather,
-    "courtyard": format_courtyard,
     "simulate": format_simulate,
-    "digest": format_digest,
 }
 
 FETCHERS = {
-    "arb-cross": fetch_arb_cross,
-    "arb-grade": fetch_arb_grade,
     "arb-weather": fetch_arb_weather,
-    "courtyard": fetch_courtyard,
     "simulate": fetch_simulate,
-    "digest": fetch_digest,
 }
 
 
@@ -713,9 +366,10 @@ def main():
 
     if not data:
         print(f"[!] No data returned for {mode}. Trying fallback...")
-        if mode != "arb-grade":
-            data = fetch_arb_grade()
-            mode = "arb-grade"
+        # Fallback: try the other mode
+        fallback = "simulate" if mode == "arb-weather" else "arb-weather"
+        data = FETCHERS[fallback]()
+        mode = fallback
         if not data:
             print("[!] All fetchers failed. Aborting.")
             sys.exit(1)
