@@ -254,14 +254,14 @@ def _market_snapshot(args: dict) -> dict:
             cur.execute("SELECT COUNT(*) FROM cards WHERE category_id = ?", (cat_id,))
             total_cards = cur.fetchone()[0]
             cur.execute(
-                "SELECT COUNT(DISTINCT p.product_id) FROM price_history p JOIN cards c ON p.product_id = c.product_id WHERE p.market_price > 0 AND c.category_id = ?",
-                (cat_id,),
+                "SELECT COUNT(DISTINCT p.product_id) FROM price_history p JOIN cards c ON p.product_id = c.product_id WHERE p.market_price > 0 AND c.category_id = ? AND p.date = ?",
+                (cat_id, max_date),
             )
             priced = cur.fetchone()[0]
         else:
             cur.execute("SELECT COUNT(*) FROM cards")
             total_cards = cur.fetchone()[0]
-            cur.execute("SELECT COUNT(DISTINCT product_id) FROM price_history WHERE market_price > 0")
+            cur.execute("SELECT COUNT(DISTINCT product_id) FROM price_history WHERE market_price > 0 AND date = ?", (max_date,))
             priced = cur.fetchone()[0]
 
         return {
