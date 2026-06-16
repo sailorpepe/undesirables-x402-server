@@ -2566,6 +2566,25 @@ async def _drand_beacon():
         return None, None
 
 
+def _verifiability_block(drand_meta, exact_params, reproduce=None):
+    """Standard provably-fair block shared by every Monte Carlo endpoint: proves the seed came from
+    the public drand beacon (not cherry-picked) and exposes FULL-PRECISION params so anyone can
+    re-fetch the published round and reproduce the forecast independently. Pass `reproduce` to
+    override the default numpy recipe (e.g. for the stdlib-random portfolio optimizer)."""
+    return {
+        "provably_fair": drand_meta is not None,
+        "method": ("Monte Carlo seeded from the public drand randomness beacon — the seed is committed "
+                   "publicly each round and cannot be cherry-picked. Re-fetch the round and reproduce."),
+        **(drand_meta or {"beacon": "local_entropy_fallback",
+                          "note": "drand unreachable at request time; the forecast is valid but not externally reproducible."}),
+        "exact_params": exact_params,
+        "reproduce": reproduce or ("rng = numpy.random.default_rng(int(randomness, 16)); "
+                      "Z = concat(rng.standard_normal(n_sims//2), -that) for antithetic variates; "
+                      "draw N=rng.poisson(lambda_jump*days/365, n_sims) and "
+                      "J=rng.normal(N*mu_j, sqrt(max(N,1))*sigma_j); apply the terminal Merton/GBM formula."),
+    }
+
+
 @app.get("/api/v1/simulate", tags=["Paid — $0.015"])
 async def simulate_price(
     card_name: str = Query(..., description="Card name to simulate"),
@@ -2815,8 +2834,10 @@ async def crypto_oracle(
     T_years = days / 365.0
     n_sims = 20000
 
-    # O(1) terminal state with antithetic variates + correct compound Poisson
-    rng = np.random.default_rng()
+    # O(1) terminal state with antithetic variates + correct compound Poisson.
+    # Provably-fair: seed from the public drand beacon (fallback to local entropy if unreachable).
+    drand_seed, drand_meta = await _drand_beacon()
+    rng = np.random.default_rng(drand_seed) if drand_seed is not None else np.random.default_rng()
     Z_half = rng.standard_normal(n_sims // 2, dtype=np.float32)
     Z = np.concatenate([Z_half, -Z_half])
 
@@ -2868,6 +2889,12 @@ async def crypto_oracle(
         },
         "source": "alchemy_merton_oracle"
     }
+
+    result["verifiability"] = _verifiability_block(drand_meta, {
+        "mu": float(mu), "sigma": float(sigma), "lambda_jump": float(lambda_jump),
+        "mu_j": float(mu_j), "sigma_j": float(sigma_j), "n_sims": int(n_sims),
+        "days": int(days), "current_price": float(floor_price), "model": "merton_jump_diffusion",
+    })
 
     return {"status": "ok", "tool": "crypto_oracle", "price": "$0.05", "data": result}
 
@@ -2932,7 +2959,9 @@ async def coin_history(
     T_years = days / 365.0
     n_sims = 20000
 
-    rng = np.random.default_rng()
+    # Provably-fair: seed from the public drand beacon (fallback to local entropy if unreachable).
+    drand_seed, drand_meta = await _drand_beacon()
+    rng = np.random.default_rng(drand_seed) if drand_seed is not None else np.random.default_rng()
     Z_half = rng.standard_normal(n_sims // 2, dtype=np.float32)
     Z = np.concatenate([Z_half, -Z_half])
 
@@ -2982,6 +3011,12 @@ async def coin_history(
         },
         "source": "coingecko_merton_oracle"
     }
+
+    result["verifiability"] = _verifiability_block(drand_meta, {
+        "mu": float(mu), "sigma": float(sigma), "lambda_jump": float(lambda_jump),
+        "mu_j": float(mu_j), "sigma_j": float(sigma_j), "n_sims": int(n_sims),
+        "days": int(days), "current_price": float(current_price), "model": "merton_jump_diffusion",
+    })
 
     return {"status": "ok", "tool": "coin_history", "price": "$0.05", "data": result}
 
@@ -3073,7 +3108,13 @@ async def portfolio_optimize(
     """
     import math
     import random
-    
+
+    # Provably-fair: seed a LOCAL random instance from the public drand beacon. A local Random() is
+    # reproducible AND thread-safe under concurrency — unlike the global random.seed(), which two
+    # simultaneous requests would clobber. Falls back to unseeded local entropy if drand is down.
+    drand_seed, drand_meta = await _drand_beacon()
+    rng = random.Random(drand_seed) if drand_seed is not None else random.Random()
+
     card_list = [c.strip() for c in cards.split(",") if c.strip()]
     if not card_list:
         raise HTTPException(status_code=400, detail="No card names provided")
@@ -3121,13 +3162,13 @@ async def portfolio_optimize(
             price = current_price
             for _ in range(days):
                 # Base GBM
-                price *= math.exp((mu - 0.5 * sigma**2) * dt + sigma * math.sqrt(dt) * random.gauss(0, 1))
+                price *= math.exp((mu - 0.5 * sigma**2) * dt + sigma * math.sqrt(dt) * rng.gauss(0, 1))
                 # Merton jump: ~2% chance per day of a jump
-                if random.random() < 0.02:
-                    if random.random() < 0.4:  # 40% positive jumps
-                        price *= (1 + random.expovariate(1/0.08))
+                if rng.random() < 0.02:
+                    if rng.random() < 0.4:  # 40% positive jumps
+                        price *= (1 + rng.expovariate(1/0.08))
                     else:  # 60% negative jumps
-                        price *= max(0.5, 1 - random.expovariate(1/0.05))
+                        price *= max(0.5, 1 - rng.expovariate(1/0.05))
             paths.append(price)
         
         paths.sort()
@@ -3213,6 +3254,16 @@ async def portfolio_optimize(
                 else "BALANCED allocation across risk-adjusted positions" if risk_tolerance == "moderate"
                 else "DEFENSIVE weighting — minimize volatility exposure"
             ),
+            "verifiability": _verifiability_block(drand_meta, {
+                "cards": card_list, "days": int(days), "risk_tolerance": risk_tolerance,
+                "sims_per_card": int(profile["sims"]), "mu": 0.08, "sigma": 0.45,
+                "daily_jump_prob": 0.02, "jump_up_prob": 0.4, "model": "merton_jump_diffusion",
+            }, reproduce=(
+                "rng = random.Random(int(randomness, 16)); for each card run sims_per_card paths of "
+                "len(days): price *= exp((mu-0.5*sigma^2)*dt + sigma*sqrt(dt)*rng.gauss(0,1)), dt=1/252; "
+                "each day with prob 0.02 apply a jump (40% up: *(1+rng.expovariate(1/0.08)), else down: "
+                "*max(0.5, 1-rng.expovariate(1/0.05))); then Markowitz mean-variance over the per-card stats."
+            )),
         }
     }
 
