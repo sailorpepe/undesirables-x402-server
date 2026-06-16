@@ -2542,6 +2542,30 @@ async def grade_card(
     return response
 
 
+async def _drand_beacon():
+    """Fetch the latest drand (League of Entropy) randomness beacon for VERIFIABLE Monte Carlo seeding.
+
+    drand emits a publicly-committed random value every round; using it as the simulation seed proves
+    the random draws were not cherry-picked to produce a favorable price path. Anyone can re-fetch the
+    published round and reproduce the run. Returns (seed:int, meta:dict) or (None, None) on failure so
+    the paid endpoint never breaks on an external dependency.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=2.5) as client:
+            r = await client.get("https://api.drand.sh/public/latest")
+            r.raise_for_status()
+            j = r.json()
+        randomness = j["randomness"]  # 64-char hex; randomness = SHA256(BLS signature of the round)
+        return int(randomness, 16), {
+            "beacon": "drand-league-of-entropy",
+            "round": j["round"],
+            "randomness": randomness,
+            "verify_round_url": f"https://api.drand.sh/public/{j['round']}",
+        }
+    except Exception:
+        return None, None
+
+
 @app.get("/api/v1/simulate", tags=["Paid — $0.015"])
 async def simulate_price(
     card_name: str = Query(..., description="Card name to simulate"),
@@ -2593,8 +2617,11 @@ async def simulate_price(
     if n_sims % 2 != 0:
         n_sims += 1
 
-    # Thread-safe RNG (critical for FastAPI async concurrency)
-    rng = np.random.default_rng()
+    # Thread-safe RNG (critical for FastAPI async concurrency).
+    # Seed from a public drand beacon so the random draws are provably fair (not cherry-picked);
+    # fall back to local entropy if drand is unreachable so the paid endpoint never fails.
+    drand_seed, drand_meta = await _drand_beacon()
+    rng = np.random.default_rng(drand_seed) if drand_seed is not None else np.random.default_rng()
 
     # ── Antithetic Variates: free variance reduction on VaR ──
     # Mirror random draws to halve the standard error of tail estimates
@@ -2682,6 +2709,26 @@ async def simulate_price(
                 f"${round(cvar_95_price, 2)} ({cvar_95_return}%)."
             ),
         },
+    }
+
+    # Verifiable randomness: prove the Monte Carlo draws were not cherry-picked. The run is seeded from
+    # a public drand beacon (or local entropy as a fallback), and the FULL-PRECISION params are exposed
+    # so a third party can re-fetch the published round and reproduce the forecast independently.
+    _exact = {"mu": float(mu), "sigma": float(sigma), "n_sims": int(n_sims),
+              "days": int(days), "current_price": float(current_price), "model": model_label}
+    if model == "merton":
+        _exact.update({"lambda_jump": float(lambda_jump), "mu_j": float(mu_j), "sigma_j": float(sigma_j)})
+    result["verifiability"] = {
+        "provably_fair": drand_seed is not None,
+        "method": ("Monte Carlo seeded from the public drand randomness beacon — the seed is committed "
+                   "publicly each round and cannot be cherry-picked. Re-fetch the round and reproduce."),
+        **(drand_meta or {"beacon": "local_entropy_fallback",
+                          "note": "drand unreachable at request time; the forecast is valid but not externally reproducible."}),
+        "exact_params": _exact,
+        "reproduce": ("rng = numpy.random.default_rng(int(randomness, 16)); "
+                      "Z = concat(rng.standard_normal(n_sims//2), -that) for antithetic variates; "
+                      "for merton draw N=rng.poisson(lambda_jump*days/365, n_sims) and "
+                      "J=rng.normal(N*mu_j, sqrt(max(N,1))*sigma_j); apply the terminal Merton/GBM formula."),
     }
 
     # Surface calibration metadata if available
