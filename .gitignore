@@ -4,3 +4,9 @@ __pycache__/
 .env
 .DS_Store
 venv/
+
+# Runtime-generated artifacts (regenerated each run — don't track)
+merkle_tree_cache.json
+graded_merkle_tree_cache.json
+weather_merkle_cache.json
+tweet_images/
