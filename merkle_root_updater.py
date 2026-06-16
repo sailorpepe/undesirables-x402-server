@@ -149,7 +149,7 @@ def main():
         "gas": 200000, "gasPrice": w3.eth.gas_price,
     })
     signed = w3.eth.account.sign_transaction(tx, pk)
-    h = w3.eth.send_raw_transaction(signed.raw_transaction)
+    h = w3.eth.send_raw_transaction(signed.rawTransaction)
     print(f"  TX: {h.hex()}")
     receipt = w3.eth.wait_for_transaction_receipt(h, timeout=120)
 
