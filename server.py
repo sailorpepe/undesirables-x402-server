@@ -29,7 +29,7 @@ import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, Query, HTTPException, Request, Body
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.responses import JSONResponse, HTMLResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
@@ -914,6 +914,8 @@ _CARD_CSS = """<style>
  .row:last-child{border:0}.lbl{color:#8b949e}.val{font-weight:600;font-variant-numeric:tabular-nums}
  .warn{color:#f85149}.up{color:#3fb950}
  .foot{color:#8b949e;font-size:13px;margin-top:14px}a{color:#58a6ff;text-decoration:none}
+ @media(max-width:560px){body{padding:16px}.name{font-size:21px}.sub{font-size:13px}
+  .img{width:100%;max-width:300px;display:block;margin:0 auto 4px}.col{min-width:0;width:100%}}
 </style>"""
 
 _CARD_GAMES = {1: "Magic", 2: "Yu-Gi-Oh!", 3: "Pokemon", 62: "Flesh and Blood", 63: "Digimon",
@@ -967,6 +969,7 @@ async def card_page(product_id: int):
     desc = f"30-day conformal forecast: 90% range ${p5:.2f}-${p95:.2f}; 5% chance below ${p5:.2f}. Calibrated, honest VaR."
     html = (f"<!doctype html><html><head><meta charset=utf-8>"
             f"<meta name=viewport content='width=device-width,initial-scale=1'>"
+            f"<link rel=icon type='image/svg+xml' href='/favicon.svg'>"
             f"<title>{title}</title><meta property='og:title' content='{title}'>"
             f"<meta property='og:description' content='{desc}'>"
             f"<meta property='og:image' content='{img_lg}'>"
@@ -990,6 +993,78 @@ async def card_page(product_id: int):
             f"<a href='https://oracle.the-undesirables.com'>oracle.the-undesirables.com</a></div>"
             f"</div></div></div></body></html>")
     return HTMLResponse(html)
+
+
+# Brand favicon (mushroom) — replaces the default browser globe.
+_FAVICON_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">'
+    '<rect x="38" y="48" width="24" height="42" rx="10" fill="#efe3c8"/>'
+    '<path d="M8 54 C8 22 50 16 50 16 C50 16 92 22 92 54 Z" fill="#e0414a"/>'
+    '<circle cx="32" cy="40" r="7" fill="#fff"/><circle cx="56" cy="33" r="6" fill="#fff"/>'
+    '<circle cx="72" cy="46" r="5" fill="#fff"/></svg>'
+)
+
+
+@app.get("/favicon.svg", include_in_schema=False)
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    return Response(_FAVICON_SVG, media_type="image/svg+xml",
+                    headers={"Cache-Control": "public, max-age=86400"})
+
+
+# llms.txt — descriptive guide for AI agents / crawlers (current state).
+_LLMS_TXT = """# The Undesirables — TCG Price & Risk Oracle
+
+> Real-math stochastic finance for trading cards. We forecast card prices with
+> conformal-calibrated bands — honest, MEASURED VaR, not assumed — and publish
+> the hit rate. "Real math. Not an API wrapper."
+
+## What this is
+A live oracle over ~437K trading-card products (Pokemon, Magic: The Gathering,
+Yu-Gi-Oh!, One Piece, Lorcana, and more) with daily prices, graded (PSA) comps,
+and on-chain Merkle-verifiable roots. The DEFAULT price model is CONFORMAL: a
+deterministic drift forecast widened by split-conformal bands fit on real holdout
+residuals, regime-aware (calm / medium / jumpy by volatility). It yields calibrated
+90% and 50% prediction ranges and an honest 95% VaR. Merton jump-diffusion and GBM
+remain available via model=.
+
+## Per-card pages (humans + agents)
+GET /card/{product_id}
+  A shareable page: card image, 30-day conformal range, median, 95% VaR,
+  probability of gain, and the volatility regime. product_id is the TCGplayer ID.
+
+## Key endpoints (https://oracle.the-undesirables.com)
+- GET /api/v1/simulate?card_name=&current_price=&days=30&model=conformal
+    Default forecast. Returns: forecast_percentiles {5th,25th,50th,75th,95th},
+    risk_metrics {VaR_95, VaR_95_pct, CVaR_95}, model_params {regime, method},
+    verifiability {calibrated: true|false}. model= conformal (default) | merton | gbm.
+- GET /api/v1/search?query=          resolve a name -> product_id + current price
+- GET /api/v1/price?product_id=&days=
+- GET /api/v1/graded?product_id= | ?name=    PSA graded comps
+- GET /api/v1/merkle/proof?product_id=        on-chain Merkle proof
+- GET /health
+- Agent discovery: /.well-known/ai-plugin.json , /.well-known/agent.json
+
+## How to read a forecast
+- "90% range $X-$Y": a calibrated 90% prediction interval — built to actually
+  contain the price ~90% of the time (coverage is measured, not assumed).
+- "95% VaR: 5% chance below $Z": calibrated downside from real holdout residuals,
+  not a normal-distribution assumption.
+- "regime" (calm/medium/jumpy): the card's volatility tercile. Wider bands on
+  jumpy cards are honest, not noise.
+
+## Notes for agents
+- Card image: https://product-images.tcgplayer.com/fit-in/437x437/{product_id}.jpg
+- Paid endpoints use x402 micropayments on Base. License: BUSL-1.1 (no competing
+  TCG oracle services).
+
+Contact: @undesirables_ai on X
+"""
+
+
+@app.get("/llms.txt", include_in_schema=False)
+async def llms_txt():
+    return PlainTextResponse(_LLMS_TXT)
 
 
 used_casper_tx_hashes = set()
