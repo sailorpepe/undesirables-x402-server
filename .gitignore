@@ -10,3 +10,6 @@ merkle_tree_cache.json
 graded_merkle_tree_cache.json
 weather_merkle_cache.json
 tweet_images/
+forecast_ledger.sqlite
+forecast_ledger.sqlite-wal
+forecast_ledger.sqlite-shm
