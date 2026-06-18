@@ -2676,8 +2676,8 @@ def _conformal_forecast(card_name, current_price, days):
 async def simulate_price(
     card_name: str = Query(..., description="Card name to simulate"),
     current_price: float = Query(..., description="Current price in USD"),
-    model: str = Query("merton", description="Model: gbm (Geometric Brownian Motion), merton (Jump-Diffusion), or conformal (deterministic drift + split-conformal bands, honest calibrated VaR)"),
-    days: int = Query(14, ge=1, le=365, description="Forecast horizon in days"),
+    model: str = Query("conformal", description="Model (default conformal): conformal (deterministic drift + regime-aware split-conformal bands, honest calibrated VaR), merton (Jump-Diffusion), or gbm (Geometric Brownian Motion). merton/gbm remain reachable for backward-compat."),
+    days: int = Query(30, ge=1, le=365, description="Forecast horizon in days"),
     simulations: int = Query(10000, ge=100, le=100000, description="Number of Monte Carlo paths"),
 ):
     """
