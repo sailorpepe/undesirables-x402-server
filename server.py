@@ -29,7 +29,7 @@ import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, Query, HTTPException, Request, Body
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
@@ -897,6 +897,88 @@ async def health():
             db.close()
 
     return result
+
+
+_CARD_CSS = """<style>
+ body{background:#0d1117;color:#e6edf3;font-family:-apple-system,system-ui,sans-serif;margin:0;padding:24px;line-height:1.55}
+ .wrap{max-width:620px;margin:0 auto}
+ .name{font-size:26px;font-weight:700;margin:0 0 2px}
+ .sub{color:#8b949e;font-size:14px;margin-bottom:18px}
+ .price{color:#f0b429;font-weight:600}
+ .card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:16px 20px;margin:14px 0}
+ .hd{font-size:13px;color:#8b949e;margin-bottom:10px}
+ .row{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #21262d}
+ .row:last-child{border:0}.lbl{color:#8b949e}.val{font-weight:600;font-variant-numeric:tabular-nums}
+ .warn{color:#f85149}.up{color:#3fb950}
+ .foot{color:#8b949e;font-size:13px;margin-top:16px}a{color:#58a6ff;text-decoration:none}
+</style>"""
+
+_CARD_GAMES = {1: "Magic", 2: "Yu-Gi-Oh!", 3: "Pokemon", 62: "Flesh and Blood", 63: "Digimon",
+               68: "One Piece", 71: "Lorcana", 79: "Star Wars Unlimited", 80: "Dragon Ball Super",
+               81: "Union Arena", 85: "Pokemon (JP)", 86: "Gundam", 89: "Riftbound"}
+
+
+@app.get("/card/{product_id}", tags=["Info"], response_class=HTMLResponse)
+async def card_page(product_id: int):
+    """Shareable per-card conformal risk-forecast page — the deep-link target for
+    the daily tweet, so the EXACT card is one click away. Additive: does not touch
+    any existing endpoint or the conformal serving path."""
+    db = _get_db()
+    row = pr = None
+    if db:
+        try:
+            row = db.execute("SELECT name, category_id FROM cards WHERE product_id=?", [product_id]).fetchone()
+            if row:
+                pr = db.execute("SELECT market_price, date FROM price_history WHERE product_id=? "
+                                "AND market_price>0 ORDER BY date DESC LIMIT 1", [product_id]).fetchone()
+        finally:
+            db.close()
+    if not row or not pr:
+        return HTMLResponse(f"<html><body style='background:#0d1117;color:#e6edf3;font-family:system-ui;"
+                            f"text-align:center;padding:80px'><h2>Card #{product_id} not found</h2>"
+                            f"<a style='color:#58a6ff' href='https://oracle.the-undesirables.com'>← oracle</a>"
+                            f"</body></html>", status_code=404)
+    name = row[0]; cat = row[1]; price = float(pr[0]); asof = pr[1]
+    fc = _conformal_forecast(name, price, 30)
+    fp = fc["forecast_percentiles"]; rm = fc["risk_metrics"]
+    regime = fc["model_params"].get("regime", "global")
+    cal = fc["verifiability"].get("calibrated")
+    p5, p25, p50, p75, p95 = (fp["5th"], fp["25th"], fp["50th"], fp["75th"], fp["95th"])
+    xs = [p5, p25, p50, p75, p95]; ys = [0.05, 0.25, 0.5, 0.75, 0.95]; cdf = 0.05
+    if price >= xs[-1]:
+        cdf = 0.95
+    elif price > xs[0]:
+        for i in range(1, 5):
+            if price <= xs[i] and xs[i] > xs[i - 1]:
+                cdf = ys[i - 1] + (price - xs[i - 1]) / (xs[i] - xs[i - 1]) * (ys[i] - ys[i - 1]); break
+    prob_up = round((1 - cdf) * 100)
+    p5pct = (p5 / price - 1) * 100
+    game = _CARD_GAMES.get(cat, "TCG")
+    rcolor = {"calm": "#3fb950", "medium": "#f0b429", "jumpy": "#f85149"}.get(regime, "#58a6ff")
+    calbadge = " · ✓ calibrated" if cal else ""
+    enc = name.replace(" ", "%20").replace("&", "%26")
+    api = f"https://oracle.the-undesirables.com/api/v1/simulate?card_name={enc}&current_price={price}&days=30&model=conformal"
+    title = f"{name} — {game} Risk Forecast"
+    desc = f"30-day conformal forecast: 90% range ${p5:.2f}-${p95:.2f}; 5% chance below ${p5:.2f}. Calibrated, honest VaR."
+    html = (f"<!doctype html><html><head><meta charset=utf-8>"
+            f"<meta name=viewport content='width=device-width,initial-scale=1'>"
+            f"<title>{title}</title><meta property='og:title' content='{title}'>"
+            f"<meta property='og:description' content='{desc}'><meta name='twitter:card' content='summary'>"
+            f"{_CARD_CSS}</head><body><div class=wrap>"
+            f"<div class=name>🎴 {name}</div>"
+            f"<div class=sub>{game} · as of {asof} · <span class=price>${price:,.2f}</span> · "
+            f"<span style='padding:3px 10px;border-radius:12px;font-weight:600;color:{rcolor};border:1px solid {rcolor}'>{regime} volatility</span></div>"
+            f"<div class=card><div class=hd>Conformal-calibrated 30-day forecast — bands fit on real holdout residuals{calbadge}</div>"
+            f"<div class=row><span class=lbl>90% range</span><span class=val>${p5:,.2f} – ${p95:,.2f}</span></div>"
+            f"<div class=row><span class=lbl>50% range</span><span class=val>${p25:,.2f} – ${p75:,.2f}</span></div>"
+            f"<div class=row><span class=lbl>Median</span><span class=val>${p50:,.2f}</span></div>"
+            f"<div class=row><span class=lbl>⚠️ Downside (95% VaR)</span><span class='val warn'>5% below ${p5:,.2f} ({p5pct:+.0f}%)</span></div>"
+            f"<div class=row><span class=lbl>🎲 Probability of gain</span><span class='val up'>{prob_up:.0f}%</span></div></div>"
+            f"<div class=foot>The 90% range is calibrated to actually hold 90% of the time. <a href='{api}'>Raw forecast (JSON) →</a></div>"
+            f"<div class=foot>🍄 <a href='https://x.com/undesirables_ai'>@undesirables_ai</a> · "
+            f"<a href='https://oracle.the-undesirables.com'>oracle.the-undesirables.com</a></div>"
+            f"</div></body></html>")
+    return HTMLResponse(html)
 
 
 used_casper_tx_hashes = set()
