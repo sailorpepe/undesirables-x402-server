@@ -2610,20 +2610,35 @@ def _conformal_forecast(card_name, current_price, days):
     import math
     cal = _get_calibrated_params(card_name)
     mu = cal["mu_annual"] if cal else 0.03
+    sigma = cal.get("sigma_annual") if cal else None
     off = _load_conformal_offsets()
     h = max(1, int(days))
-    calibrated = bool(off) and h <= int(off.get("max_horizon", 0))
+
+    # Pick the offset bundle: regime-specific (by the card's calibrated vol) when the offsets file is
+    # regime-aware, else the pooled/global arrays. Same per-step schema either way, so the rest is
+    # unchanged. Calm cards then get tight bands and jumpy cards wide ones — honest AND discriminating.
+    bundle, regime = None, None
+    if off:
+        regs = off.get("regimes")
+        th = (off.get("regime_thresholds") or {}).get("sigma_annual")
+        if regs and sigma is not None and th and len(th) == 2:
+            regime = "calm" if sigma <= th[0] else ("medium" if sigma <= th[1] else "jumpy")
+            bundle = regs.get(regime)
+        if bundle is None and "bands" in off and "var95" in off:
+            bundle = {"bands": off["bands"], "var95": off["var95"], "var99": off.get("var99", off["var95"])}
+            regime = "global"
+    calibrated = bool(off) and bundle is not None and h <= int(off.get("max_horizon", 0))
     point = current_price * math.exp(mu * h / 365.0)
 
     def at(arr):                      # per-step value at horizon h (1-indexed), normalized -> price
         return arr[min(h, len(arr)) - 1] * current_price
     def band(level, zfb):
-        if calibrated and level in off.get("bands", {}):
-            return at(off["bands"][level])
+        if calibrated and level in bundle.get("bands", {}):
+            return at(bundle["bands"][level])
         return 0.013 * zfb * math.sqrt(h) * current_price      # uncalibrated fallback (~1.3% daily vol)
     def tail(name, zfb):
-        if calibrated and name in off:
-            return at(off[name])
+        if calibrated and name in bundle:
+            return at(bundle[name])
         return 0.013 * zfb * math.sqrt(h) * current_price
 
     off50 = band("0.50", 0.674); off90 = band("0.90", 1.645)
@@ -2634,7 +2649,7 @@ def _conformal_forecast(card_name, current_price, days):
     return {
         "card_name": card_name, "current_price": current_price, "model": "conformal_drift", "days": h,
         "param_source": ("calibrated_from_market_data" if cal else "default_tcg_priors"),
-        "model_params": {"drift_mu": round(mu, 4), "base": "drift", "method": "split_conformal"},
+        "model_params": {"drift_mu": round(mu, 4), "base": "drift", "method": "split_conformal", "regime": regime},
         "forecast_percentiles": {
             "5th": round(max(0.0, point - off90), 4), "25th": round(max(0.0, point - off50), 4),
             "50th": round(point, 4), "75th": round(point + off50, 4), "95th": round(point + off90, 4),
