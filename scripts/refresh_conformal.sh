@@ -1,5 +1,6 @@
 #!/bin/bash
-# Nightly: refit split-conformal offsets on the live DB and reload x402.
+# Nightly: refit REGIME-AWARE split-conformal offsets on the live DB and reload
+# x402. Emits per-vol-tercile (calm/medium/jumpy) bundles + a global fallback.
 # Runs after the 3 AM daily-pipeline DB refresh. Read-only on the DB.
 set -e
 DIR=/Users/thegreatluna8713/Documents/undesirables-x402-server
