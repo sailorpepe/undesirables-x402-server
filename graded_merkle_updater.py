@@ -139,47 +139,51 @@ def main():
 
     print(f"  New root: {root_hex}")
 
-    # Push on-chain
+    # Push on-chain. This account is shared by the other hourly LitVM pushers,
+    # so use the PENDING nonce and retry on nonce/replacement conflicts instead
+    # of failing the whole run on "nonce too low".
+    import time
     oracle = w3.eth.contract(address=addr, abi=abi)
-    nonce = w3.eth.get_transaction_count(wallet)
-    
-    # Optional gas limit/price handling, using base defaults
-    tx = oracle.functions.updateMerkleRoot(root, len(rows)).build_transaction({
-        "chainId": CHAIN, 
-        "from": wallet, 
-        "nonce": nonce,
-        "gas": 250000, 
-        "gasPrice": w3.eth.gas_price,
-    })
-    
-    signed = w3.eth.account.sign_transaction(tx, private_key=pk)
-    print("  Broadcasting transaction...")
-    try:
-        # In web3 v6+ it's raw_transaction. If older, use rawTransaction.
+    tx_hash = None
+    for attempt in range(4):
+        nonce = w3.eth.get_transaction_count(wallet, "pending")   # include in-flight txs
+        tx = oracle.functions.updateMerkleRoot(root, len(rows)).build_transaction({
+            "chainId": CHAIN, "from": wallet, "nonce": nonce,
+            "gas": 250000, "gasPrice": w3.eth.gas_price,
+        })
+        signed = w3.eth.account.sign_transaction(tx, private_key=pk)
+        # web3 v6+ exposes raw_transaction; older exposes rawTransaction.
         raw_tx = getattr(signed, 'raw_transaction', getattr(signed, 'rawTransaction', None))
-        tx_hash = w3.eth.send_raw_transaction(raw_tx)
-        print(f"  Tx Hash: {tx_hash.hex()}")
-        
-        receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
-        if receipt.status != 1:
-            print("  ERROR: Transaction reverted!")
+        try:
+            print(f"  Broadcasting (attempt {attempt+1}, nonce {nonce})...")
+            tx_hash = w3.eth.send_raw_transaction(raw_tx)
+            break
+        except Exception as e:
+            msg = str(e).lower()
+            if attempt < 3 and ("nonce too low" in msg or "already known" in msg
+                                or "replacement transaction underpriced" in msg):
+                print(f"  nonce conflict: {e} — backing off, refetching nonce")
+                time.sleep(8); continue
+            print(f"  ERROR sending tx: {e}")
             sys.exit(1)
-        print(f"  Success! Gas used: {receipt.gasUsed:,}")
-        
-        # Save cache ONLY if transaction succeeds
-        tree_hex = [["0x" + h.hex() for h in layer] for layer in tree]
-        with open(CACHE_PATH, "w") as f:
-            json.dump({
-                "root": root_hex,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "tree": tree_hex,
-                "data": data_list
-            }, f)
-            
-        print("  Cache updated.")
-    except Exception as e:
-        print(f"  ERROR sending tx: {e}")
+
+    print(f"  Tx Hash: {tx_hash.hex()}")
+    receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+    if receipt.status != 1:
+        print("  ERROR: Transaction reverted!")
         sys.exit(1)
+    print(f"  Success! Gas used: {receipt.gasUsed:,}")
+
+    # Save cache ONLY after a successful tx
+    tree_hex = [["0x" + h.hex() for h in layer] for layer in tree]
+    with open(CACHE_PATH, "w") as f:
+        json.dump({
+            "root": root_hex,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "tree": tree_hex,
+            "data": data_list
+        }, f)
+    print("  Cache updated.")
 
     print(f"  --- Done ---\n")
 
