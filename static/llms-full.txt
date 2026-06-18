@@ -16,7 +16,7 @@ The Undesirables is an advanced infrastructure collective bridging the gap betwe
 ### 1. The Oracle Terminal (x402 API)
 A machine-first intelligence API that bypasses traditional API keys in favor of the x402 protocol (USDC micropayments on the Base network). It is fully indexed on the Agentic Market / Coinbase CDP Facilitator.
 It serves two primary functions:
-- **TCG Intelligence:** Houses a massive database of 370,000+ Trading Card Game products. Offers AI vision grading (predicting PSA/Beckett scores) and Monte Carlo pricing simulations for physical assets.
+- **TCG Intelligence:** Houses a massive database of 370,000+ Trading Card Game products. Offers AI vision grading (predicting PSA/Beckett scores) and conformal-calibrated risk forecasting (honest VaR/CVaR plus Safe-Hold & Momentum letter grades; Monte Carlo opt-in) for physical assets.
 - **Predicative Market Arbitrage:** Seamlessly bridges traditional crypto data with prediction markets, offering cross-platform arbitrage scanning (Polymarket vs Kalshi), weather data edges, and basket arbs.
 
 ### 2. Open-Source Infrastructure (Meme Merchants)
@@ -24,7 +24,7 @@ The Undesirables ecosystem is powered by 6 distinct open-source repositories hos
 
 - **[undesirables-desktop](https://gitlab.com/meme-merchants/undesirables-desktop)**: The official AI Desktop CRM for The Undesirables — a zero-trust, local-first Tauri application that transforms NFT souls into autonomous AI agents. Features include a Market Oracle with 6 trading strategies, voice synthesis, 3D hologram rendering, and local LLM execution.
 - **[undesirables-mcp-server](https://gitlab.com/meme-merchants/undesirables-mcp-server)**: Turn any Undesirable NFT into an MCP-compatible AI agent. Exposes 35 autonomous tools (including TCG card grading, eBay depth analysis, 3D rendering, and voice synthesis) to standard LLM clients (like Claude Desktop or Cursor).
-- **[elizaos-tcg-oracle-plugin](https://gitlab.com/meme-merchants/elizaos-tcg-oracle-plugin)**: An ElizaOS plugin that gives AI agents direct access to the TCG Oracle API (370K+ trading card products across 25 games, real-time pricing, Monte Carlo simulations, and AI vision grading).
+- **[elizaos-tcg-oracle-plugin](https://gitlab.com/meme-merchants/elizaos-tcg-oracle-plugin)**: An ElizaOS plugin that gives AI agents direct access to the TCG Oracle API (370K+ trading card products across 25 games, real-time pricing, conformal risk forecasting, and AI vision grading).
 - **[plugin-undesirables](https://gitlab.com/meme-merchants/plugin-undesirables)**: The official ElizaOS client Integration plugin. Seamlessly connects our 4,444 autonomous NFT souls to the broader decentralized AI ecosystem, mapping core logic, video production skills, and on-chain behaviors.
 - **[Registry](https://gitlab.com/meme-merchants/Registry)**: The decentralized package directory and official ElizaOS plugin registry for Meme Merchants. A core index allowing local agents to dynamically resolve, download, and load custom software plugins seamlessly.
 - **[undesirables-x402-server](https://gitlab.com/meme-merchants/undesirables-x402-server)**: This very server. A Coinbase x402 micropayment-gated API proxy for The Undesirables TCG Oracle and Shroomy Arbitrage engines.
