@@ -45,9 +45,13 @@ def ensure_schema(led):
         forecast_date TEXT, product_id INTEGER, card_name TEXT, sub_type TEXT, horizon INTEGER,
         current_price REAL, point REAL, band_50_low REAL, band_50_high REAL,
         band_90_low REAL, band_90_high REAL, var95_pct REAL, var99_pct REAL,
-        regime TEXT, mu_annual REAL, sigma_annual REAL, prob_up REAL,
+        regime TEXT, mu_annual REAL, sigma_annual REAL, prob_up REAL, drift_spike INTEGER,
         offsets_fit_date TEXT, created_at TEXT,
         PRIMARY KEY (forecast_date, product_id, sub_type, horizon))""")
+    try:                                   # add drift_spike to pre-existing ledgers
+        led.execute("ALTER TABLE forecast_ledger ADD COLUMN drift_spike INTEGER")
+    except Exception:
+        pass
     led.commit()
 
 
@@ -142,7 +146,7 @@ def main():
         dates, prices = full_history(mkt, pid)
         if len(prices) < 5:
             continue
-        mu, sigma = C.served_params(dates, prices)
+        mu, sigma, spike = C.served_params(dates, prices)
         if mu is None:
             continue
         # S0 = latest price for THIS (product, sub_type)
@@ -167,8 +171,8 @@ def main():
                    round(max(0.0, point - off50), 4), round(point + off50, 4),
                    round(max(0.0, point - off90), 4), round(point + off90, 4),
                    round((var95 - S0) / S0 * 100, 2), round((var99 - S0) / S0 * 100, 2),
-                   regime, mu, sigma, prob_up(point, off50, off90, S0), fit_date, now)
-            cur = led.execute("INSERT OR IGNORE INTO forecast_ledger VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", row)
+                   regime, mu, sigma, prob_up(point, off50, off90, S0), int(spike), fit_date, now)
+            cur = led.execute("INSERT OR IGNORE INTO forecast_ledger VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", row)
             if cur.rowcount: written += 1
             else: skipped += 1
     led.commit()
