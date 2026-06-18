@@ -117,7 +117,16 @@ def fetch_simulate():
         ORDER BY RANDOM()
         LIMIT 1
         """
-        row = conn.execute(query).fetchone()
+        force = os.environ.get("DAILY_ALPHA_CARD")
+        if force:                          # showcase/debug: pin a specific product_id
+            row = conn.execute(
+                "SELECT c.name, c.product_id, ph.market_price as current_price, s.drift, s.volatility "
+                "FROM cards c JOIN price_history ph ON c.product_id=ph.product_id "
+                "LEFT JOIN shroomy_stats s ON c.product_id=s.product_id "
+                "WHERE c.product_id=? AND ph.date=(SELECT MAX(date) FROM price_history)",
+                [int(force)]).fetchone()
+        else:
+            row = conn.execute(query).fetchone()
         if not row:
             query = """
             SELECT c.name, c.product_id, ph.market_price as current_price,
