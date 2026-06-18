@@ -113,6 +113,7 @@ def fetch_simulate():
                OR c.name LIKE '%Umbreon%' OR c.name LIKE '%Gengar%'
                OR c.name LIKE '%Eevee%' OR c.name LIKE '%Rayquaza%'
                OR c.name LIKE '%Jace%' OR c.name LIKE '%Liliana%')
+          AND (c.name GLOB '*[0-9]*' OR c.name LIKE '%(%')
         ORDER BY RANDOM()
         LIMIT 1
         """
@@ -181,7 +182,8 @@ def fetch_simulate():
             print(f"[!] per-step bands skipped: {e}")
 
         return {
-            "type": "simulate", "card_name": name, "current_price": price,
+            "type": "simulate", "card_name": name, "product_id": card["product_id"],
+            "current_price": price,
             "p5": p5, "p25": p25, "p50": p50, "p75": p75, "p95": p95,
             "regime": regime, "calibrated": calibrated,
             "volatility": round(vol * 100, 1),
@@ -273,7 +275,7 @@ def format_simulate(data):
         lines.append("Balanced — the market isn't giving a clear signal yet.\n")
 
     lines.append("The bands are calibrated — the 90% range is built to actually hold 90%.")
-    lines.append("🔍 oracle.the-undesirables.com\n")
+    lines.append(f"🔍 oracle.the-undesirables.com/card/{data.get('product_id', '')}\n")
     lines.append("🍄 @undesirables_ai")
     lines.append("#RiskForecast #TCG #TradingCards #Pokemon #QuantFinance")
     return "\n".join(lines)
