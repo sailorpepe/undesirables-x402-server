@@ -27,11 +27,18 @@ _DROP = {"A+": "A", "A": "B", "B": "C", "C": "D", "D": "F", "F": "F"}
 
 
 def safe_hold_grade(var95_pct: float, var99_pct: float) -> str:
-    """Downside / capital-preservation grade from |VaR95| (% loss). ABSOLUTE bands;
-    a deep 99% tail (var99_pct <= -60) drops one letter."""
-    a = abs(var95_pct)
-    g = ("A+" if a <= 5 else "A" if a <= 8 else "B" if a <= 12
-         else "C" if a <= 20 else "D" if a <= 35 else "F")
+    """Downside / capital-preservation grade from the 95% VaR loss. ABSOLUTE bands;
+    a deep 99% tail (var99_pct <= -60) drops one letter.
+
+    Uses DOWNSIDE LOSS = max(0, -var95_pct), not abs(): a positive VaR (the 5th
+    percentile is still a gain) means no modeled downside -> A+, whereas abs() would
+    misread it as huge risk. Identical to |var95_pct| for all normal (negative-VaR)
+    cards. NOTE: ~1.5% of cards are drift-exploded (point forecast runs away on
+    recently-spiked names) and produce a positive VaR — cap drift upstream / filter
+    them before trusting grades on those names (see report)."""
+    loss = max(0.0, -var95_pct)
+    g = ("A+" if loss <= 5 else "A" if loss <= 8 else "B" if loss <= 12
+         else "C" if loss <= 20 else "D" if loss <= 35 else "F")
     if var99_pct <= -60:                       # fat-tail guard
         g = _DROP[g]
     return g
@@ -61,6 +68,8 @@ def _test():
     assert safe_hold_grade(-50.0, -90) == "F"
     assert safe_hold_grade(-4.0, -65) == "A"          # A+ dropped by tail guard
     assert safe_hold_grade(-18.0, -100) == "D"        # C dropped by tail guard
+    assert safe_hold_grade(1240.4, 318.8) == "A+"     # positive VaR (no downside) -> A+, not F
+    assert safe_hold_grade(0.1, -16.4) == "A+"        # tiny positive VaR, calm
     assert momentum_grade(20, 0.70) == "A+"
     assert momentum_grade(20, 0.58) == "A"            # A+ -> A (conviction < 0.60)
     assert momentum_grade(10, 0.60) == "A"
