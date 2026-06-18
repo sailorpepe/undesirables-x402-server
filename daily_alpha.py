@@ -36,9 +36,10 @@ DB_PATH = Path.home() / "Documents" / "undesirables-mcp-server" / ".cache" / "ma
 SHROOMY_URL = "http://127.0.0.1:3000"
 ORACLE_URL = "https://oracle.the-undesirables.com"
 
-# Daily conformal RISK FORECAST every day (leaning into the calibrated price/risk
-# forecasting). Weather edge stays available via --mode arb-weather.
-DAY_SCHEDULE = {d: "simulate" for d in range(7)}
+# Conformal RISK FORECAST Mon-Sat; Sunday off. (Leaning into the calibrated
+# price/risk forecasting.) Weather edge stays available via --mode arb-weather.
+DAY_SCHEDULE = {d: "simulate" for d in range(6)}  # Mon-Sat
+DAY_SCHEDULE[6] = None                             # Sunday — OFF
 
 
 # ---------------------------------------------------------------------------
