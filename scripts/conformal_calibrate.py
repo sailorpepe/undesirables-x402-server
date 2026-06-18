@@ -1,47 +1,52 @@
 #!/usr/bin/env python3
 """
-conformal_calibrate.py — fit split-conformal band/tail offsets for the
-/api/v1/simulate?model=conformal endpoint and write conformal_offsets.json.
+conformal_calibrate.py — fit REGIME-AWARE split-conformal offsets for
+/api/v1/simulate?model=conformal and write conformal_offsets.json.
 
-Validated logic (Round 5 conformalized-drift winner): per-step offsets fit on
-real cross-card holdout residuals give calibrated coverage + honest VaR with NO
-Monte Carlo. The point forecast EXACTLY matches the served endpoint:
+Calm cards get tight bands, jumpy cards wide ones — honest AND discriminating,
+instead of one blanket global band. The serving endpoint (server.py) buckets a
+card by cal['sigma_annual'] from _get_calibrated_params against
+regime_thresholds.sigma_annual, then uses that regime's offset arrays; it falls
+back to the top-level global arrays if the file has no regimes or sigma is
+unavailable. So the output stays backward-compatible.
 
-    mu      = _get_calibrated_params() v3 drift on the CONTEXT (ISO-week
-              gap-scaled sigma + CAGR + Ito), rounded to 4 dp
-    point_h = current_price * exp(mu * h / 365)
+Point forecast matches the endpoint EXACTLY:
+    mu, sigma = v3 calibrator (ISO-week gap-scaled sigma + CAGR + Ito), rounded 4dp
+    point_h   = current_price * exp(mu * h / 365)
+Both mu and sigma are computed on the information set at forecast time (the
+CONTEXT) — identical to serve, where the context is the card's full history.
 
 Offsets are fractions of current_price, per step h=1..30:
     bands[L] = quantile_L(|actual - point| / price)        (symmetric half-width)
     varP     = quantile_P((point - actual) / price)         (one-sided lower tail)
 
-Read-only on the DB (opened mode=ro). Fixed, deterministic card pick. Disjoint
-calib/eval split. Validates OOS before writing.
+Read-only DB (mode=ro). Deterministic pick. Disjoint calib/eval. OOS-validated
+per regime before writing.
 
-Usage:
-  python3 scripts/conformal_calibrate.py [--db PATH] [--out PATH] [--n 800]
-  default db=/tmp/mm_readonly.sqlite  out=<next to server.py>/conformal_offsets.json
+Usage: python3 scripts/conformal_calibrate.py [--db PATH] [--out PATH] [--n 1500]
 """
 import os, sys, math, sqlite3, json, argparse, statistics
 from datetime import datetime, date
 
-H = 30                       # max_horizon published
+H = 30
 SUBTYPE = "Normal"
-BANDS_STORE = ["0.50", "0.90"]              # what the endpoint reads
-BANDS_ALL = {"0.50": 0.50, "0.80": 0.80, "0.90": 0.90, "0.95": 0.95}  # +0.80/0.95 for validation
+BANDS_STORE = ["0.50", "0.90"]
+BANDS_ALL = {"0.50": 0.50, "0.80": 0.80, "0.90": 0.90, "0.95": 0.95}
+REGIMES = ["calm", "medium", "jumpy"]
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_OUT = os.path.join(os.path.dirname(HERE), "conformal_offsets.json")
 
 
-def served_mu(dates, prices):
-    """EXACT replica of server.py _get_calibrated_params main path (mu_annual)."""
+def served_params(dates, prices):
+    """EXACT replica of server.py _get_calibrated_params main path -> (mu_annual,
+    sigma_annual), both round(.,4). The endpoint buckets regime on sigma_annual."""
     span = (dates[-1] - dates[0]).days
     years = max(span / 365.0, 0.01)
     weekly = []
     if span >= 28:
         buckets = {}
         for d, p in zip(dates, prices):
-            buckets[d.isocalendar()[:2]] = (d, p)          # (iso_year, iso_week) -> last of week
+            buckets[d.isocalendar()[:2]] = (d, p)
         sw = sorted(buckets)
         for i in range(1, len(sw)):
             pdt, pp = buckets[sw[i - 1]]; cdt, cp = buckets[sw[i]]
@@ -59,18 +64,15 @@ def served_mu(dates, prices):
     elif len(daily) >= 5:
         sigma = statistics.stdev(daily) * math.sqrt(365)
     else:
-        return None
+        return None, None
     cagr = math.log(prices[-1] / prices[0]) / years
-    return round(cagr + 0.5 * sigma ** 2, 4)               # mu_annual (Ito), as the endpoint rounds
+    mu = cagr + 0.5 * sigma ** 2
+    return round(mu, 4), round(sigma, 4)
 
 
 def conf_q(scores, cov):
-    n = len(scores); lvl = min(1.0, math.ceil((n + 1) * cov) / n)
-    return float(_quantile(sorted(scores), lvl))
-
-
-def _quantile(s, lvl):       # 'higher' interpolation, matches np.quantile(method='higher')
-    import bisect
+    s = sorted(scores); n = len(s)
+    lvl = min(1.0, math.ceil((n + 1) * cov) / n)
     if lvl <= 0: return s[0]
     if lvl >= 1: return s[-1]
     return s[min(len(s) - 1, math.ceil(lvl * (len(s) - 1)))]
@@ -87,7 +89,6 @@ def load(db, n):
       ORDER BY (mx-mn)/av ASC""").fetchall()
     if not pids:
         con.close(); return []
-    # deterministic stratified pick across movement
     step = max(1, len(pids) // n)
     sel = [pids[i][0] for i in range(0, len(pids), step)][:n]
     out = []
@@ -103,91 +104,106 @@ def load(db, n):
     return out
 
 
-def residuals(card):
-    """Return per-step (|err|/S0, (point-actual)/S0) for h=1..H, or None."""
+def feat(card):
+    """Per-card features at the forecast origin (context = all but last H)."""
     dates, prices = card
     cd, cp = dates[:-H], prices[:-H]
     if len(cp) < 5:
         return None
-    mu = served_mu(cd, cp)
+    mu, sigma = served_params(cd, cp)
     if mu is None:
         return None
     S0 = cp[-1]; actual = prices[-H:]
-    absf = []; lowf = []
+    absf, lowf = [], []
     for h in range(1, H + 1):
         point = S0 * math.exp(mu * h / 365.0)
         absf.append(abs(actual[h - 1] - point) / S0)
         lowf.append((point - actual[h - 1]) / S0)
-    return absf, lowf
+    return {"sigma": sigma, "mu": mu, "S0": S0, "actual": actual, "absf": absf, "lowf": lowf}
 
 
-def fit(cards):
-    R = [r for r in (residuals(c) for c in cards) if r]
-    absM = [[R[i][0][h] for i in range(len(R))] for h in range(H)]   # per-step abs frac
-    lowM = [[R[i][1][h] for i in range(len(R))] for h in range(H)]   # per-step lower frac
-    bands = {L: [conf_q(absM[h], cov) for h in range(H)] for L, cov in BANDS_ALL.items()}
-    var95 = [conf_q(lowM[h], 0.95) for h in range(H)]
-    var99 = [conf_q(lowM[h], 0.99) for h in range(H)]
-    return bands, var95, var99, len(R)
+def fit_bundle(feats):
+    """Conformal offsets from a set of cards: bands (symmetric) + var95/var99 (lower).
+    The deep-tail lines carry a small safety margin (fit at 0.96 / 0.993, not
+    0.95 / 0.99) so OOS exceedance lands at/under nominal per regime — a SOLD VaR
+    must never under-protect. Bands stay at their nominal coverage."""
+    absM = [[f["absf"][h] for f in feats] for h in range(H)]
+    lowM = [[f["lowf"][h] for f in feats] for h in range(H)]
+    bands = {L: [round(conf_q(absM[h], cov), 6) for h in range(H)] for L, cov in BANDS_ALL.items()}
+    var95 = [round(conf_q(lowM[h], 0.96), 6) for h in range(H)]    # 0.96 -> ~<=5% OOS
+    var99 = [round(conf_q(lowM[h], 0.993), 6) for h in range(H)]   # 0.993 -> ~<=1% OOS
+    return {"bands": bands, "var95": var95, "var99": var99}
 
 
-def validate(cards, bands, var95, var99, Hval):
-    """OOS: coverage at 80/90/95 + VaR95/VaR99 exceedance using fitted offsets."""
-    cov_hit = {L: 0 for L in ("0.80", "0.90", "0.95")}; tot = 0
-    v95 = v99 = 0
-    for c in cards:
-        dates, prices = c; cd, cp = dates[:-H], prices[:-H]
-        mu = served_mu(cd, cp)
-        if mu is None: continue
-        S0 = cp[-1]; actual = prices[-H:]
+def regime_of(sigma, th):
+    return "calm" if sigma <= th[0] else ("medium" if sigma <= th[1] else "jumpy")
+
+
+def validate(feats, bundles, th, Hval):
+    """Per-regime OOS coverage 80/90/95 + VaR95/VaR99 exceedance."""
+    agg = {rg: {"c80": 0, "c90": 0, "c95": 0, "v95": 0, "v99": 0, "n": 0} for rg in REGIMES}
+    for f in feats:
+        rg = regime_of(f["sigma"], th); b = bundles[rg]; S0 = f["S0"]
         for h in range(1, Hval + 1):
-            point = S0 * math.exp(mu * h / 365.0); a = actual[h - 1]; tot += 1
-            for L in cov_hit:
-                if point - bands[L][h - 1] * S0 <= a <= point + bands[L][h - 1] * S0:
-                    cov_hit[L] += 1
-            if a < point - var95[h - 1] * S0: v95 += 1
-            if a < point - var99[h - 1] * S0: v99 += 1
-    return {L: 100.0 * cov_hit[L] / tot for L in cov_hit}, 100.0 * v95 / tot, 100.0 * v99 / tot, tot
+            point = S0 * math.exp(f["mu"] * h / 365.0); a = f["actual"][h - 1]; agg[rg]["n"] += 1
+            for L, key in (("0.80", "c80"), ("0.90", "c90"), ("0.95", "c95")):
+                if point - b["bands"][L][h - 1] * S0 <= a <= point + b["bands"][L][h - 1] * S0:
+                    agg[rg][key] += 1
+            if a < point - b["var95"][h - 1] * S0: agg[rg]["v95"] += 1
+            if a < point - b["var99"][h - 1] * S0: agg[rg]["v99"] += 1
+    return agg
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--db", default="/tmp/mm_readonly.sqlite")
     ap.add_argument("--out", default=DEFAULT_OUT)
-    ap.add_argument("--n", type=int, default=800)
-    ap.add_argument("--fit-date", default=None, help="override fit_date (default: file mtime is avoided; pass YYYY-MM-DD)")
+    ap.add_argument("--n", type=int, default=2000)
     a = ap.parse_args()
 
     cards = load(a.db, a.n)
-    if len(cards) < 60:
-        print(f"❌ only {len(cards)} cards — too few to calibrate"); sys.exit(1)
-    # disjoint calib / eval (deterministic alternating split)
-    calib = cards[0::2]; evalc = cards[1::2]
-    bands, var95, var99, ncal = fit(calib)
+    feats = [x for x in (feat(c) for c in cards) if x]
+    if len(feats) < 120:
+        print(f"❌ only {len(feats)} usable cards — too few"); sys.exit(1)
+    calib = feats[0::2]; evalf = feats[1::2]
 
-    print(f"[conformal] calib cards={ncal}  eval cards={len(evalc)}  (db={a.db})")
-    print(f"{'horizon':<10}{'cov80':>9}{'cov90':>9}{'cov95':>9}{'VaR95':>9}{'VaR99':>9}{'n':>9}")
+    # regime thresholds: terciles of CALIB sigma_annual (the value serve buckets on)
+    sig = sorted(f["sigma"] for f in calib)
+    t1 = round(sig[len(sig) // 3], 4); t2 = round(sig[2 * len(sig) // 3], 4)
+    th = [t1, t2]
+
+    # fit per-regime bundles (on calib) + global fallback
+    bundles = {rg: fit_bundle([f for f in calib if regime_of(f["sigma"], th) == rg] or calib)
+               for rg in REGIMES}
+    glob = fit_bundle(calib)
+
+    # ── validate OOS ──
+    print(f"[conformal-regime] calib={len(calib)} eval={len(evalf)} | thresholds sigma_annual t1={t1} t2={t2} (db={a.db})")
     for Hval in (14, 30):
-        cov, v95, v99, tot = validate(evalc, bands, var95, var99, Hval)
-        print(f"{Hval:<10}{cov['0.80']:>8.1f}%{cov['0.90']:>8.1f}%{cov['0.95']:>8.1f}%"
-              f"{v95:>8.1f}%{v99:>8.1f}%{tot:>9}")
-    print("targets:   cov80~80  cov90~90  cov95~95  VaR95<=~5  VaR99<=~1")
+        agg = validate(evalf, bundles, th, Hval)
+        print(f"  --- horizon {Hval}d ---  (targets cov ~80/90/95, VaR95<=~5, VaR99<=~1)")
+        print(f"  {'regime':<8}{'n_cards':>8}{'cov80':>8}{'cov90':>8}{'cov95':>8}{'VaR95':>8}{'VaR99':>8}{'VaR95off@h':>12}")
+        for rg in REGIMES:
+            g = agg[rg]; nn = max(g["n"], 1)
+            off14 = bundles[rg]["var95"][min(Hval, H) - 1]
+            print(f"  {rg:<8}{g['n']//Hval:>8}{100*g['c80']/nn:>7.1f}%{100*g['c90']/nn:>7.1f}%"
+                  f"{100*g['c95']/nn:>7.1f}%{100*g['v95']/nn:>7.1f}%{100*g['v99']/nn:>7.1f}%{off14:>12.4f}")
+    print(f"  band-width check (var95 @h=14): calm {bundles['calm']['var95'][13]:.4f}  "
+          f"medium {bundles['medium']['var95'][13]:.4f}  jumpy {bundles['jumpy']['var95'][13]:.4f}")
 
-    fit_date = a.fit_date or _today()
     out = {
-        "fit_date": fit_date, "base": "drift", "n_cards": ncal, "max_horizon": H,
-        "bands": {L: [round(x, 6) for x in bands[L]] for L in BANDS_STORE},
-        "var95": [round(x, 6) for x in var95],
-        "var99": [round(x, 6) for x in var99],
+        "fit_date": os.environ.get("CONFORMAL_FIT_DATE") or date.today().isoformat(),
+        "base": "drift", "n_cards": len(calib), "max_horizon": H,
+        "regime_thresholds": {"sigma_annual": th},
+        "regimes": {rg: {"bands": {L: bundles[rg]["bands"][L] for L in BANDS_STORE},
+                         "var95": bundles[rg]["var95"], "var99": bundles[rg]["var99"]} for rg in REGIMES},
+        # global fallback (used when the card's sigma is unavailable at serve time)
+        "bands": {L: glob["bands"][L] for L in BANDS_STORE},
+        "var95": glob["var95"], "var99": glob["var99"],
     }
     with open(a.out, "w") as f:
         json.dump(out, f, indent=2)
-    print(f"\n✅ wrote {a.out}  (fit_date={fit_date}, base=drift, n_cards={ncal}, max_horizon={H})")
-
-
-def _today():
-    # avoid Date.now-style nondeterminism concerns: read the DB's latest date as 'as-of'
-    return os.environ.get("CONFORMAL_FIT_DATE") or date.today().isoformat()
+    print(f"\n✅ wrote {a.out} (regime-aware: calm/medium/jumpy + global fallback, n_cards={len(calib)})")
 
 
 if __name__ == "__main__":
