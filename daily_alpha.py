@@ -181,6 +181,14 @@ def fetch_simulate():
         except Exception as e:
             print(f"[!] per-step bands skipped: {e}")
 
+        # letter grades (validated cut-points; N/A on a drift spike)
+        import sys as _gs
+        _gs.path.insert(0, str(SCRIPT_DIR / "scripts"))
+        from card_grades import safe_hold_grade, momentum_grade
+        emove = (p50 / price - 1) * 100
+        safe_g = safe_hold_grade(rm.get("VaR_95_pct", 0.0), rm.get("CVaR_95_pct", 0.0))
+        mom_g = "N/A" if mp.get("drift_spike") else momentum_grade(emove, prob_up / 100.0)
+
         return {
             "type": "simulate", "card_name": name, "product_id": card["product_id"],
             "current_price": price,
@@ -189,6 +197,7 @@ def fetch_simulate():
             "volatility": round(vol * 100, 1),
             "var95_pct": rm.get("VaR_95_pct"),
             "upside_prob": prob_up, "bands": bands,
+            "safe_grade": safe_g, "momentum_grade": mom_g,
         }
     except Exception as e:
         print(f"[!] Forecast failed: {e}")
@@ -254,9 +263,11 @@ def format_simulate(data):
     price = data["current_price"]
     p5_pct = (data["p5"] / price - 1) * 100
 
+    sg = data.get("safe_grade", "?"); mg = data.get("momentum_grade", "?")
     lines = [f"📊 Daily Risk Forecast — {now}\n"]
     lines.append(f"🎴 {name}  ·  ${price:.2f}")
-    lines.append(f"{remoji} Volatility regime: {regime}\n")
+    lines.append(f"{remoji} Volatility regime: {regime}")
+    lines.append(f"🛡️ Safe-Hold grade: {sg}   🚀 Momentum grade: {mg}\n")
     lines.append("Our conformal-calibrated oracle's 30-day outlook — bands fit on real "
                  "holdout residuals, so the risk is MEASURED, not assumed:\n")
     lines.append(f"  90% range:  ${data['p5']:.2f} – ${data['p95']:.2f}")
