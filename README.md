@@ -6,7 +6,7 @@ An x402 micropayment-gated API providing **financial intelligence for the $50B+ 
 
 # ⚡ TCG Oracle — AI Card Grading & Market Data
 
-**28 paid AI endpoints · USDC micropayments on Base · Merton Jump-Diffusion Monte Carlo · AI card grading**
+**28 paid AI endpoints · USDC micropayments on Base · Conformal-calibrated risk forecasts · AI card grading**
 
 ![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white)
 ![License: BSL-1.1](https://img.shields.io/badge/License-BSL_1.1-red?style=flat-square)
@@ -110,7 +110,7 @@ The server automatically registers its JSON schemas with the Coinbase CDP Facili
 |----------|-------|----------------|
 | `GET /api/v1/grade` | **$0.10** | "What PSA/Beckett grade would this card get?" — 3-stage pipeline: Vision LLM + OpenCV centering + BGS capping. Includes free ROI verdict. |
 | `GET /api/v1/grade-or-not` | **$0.10** | "Should I grade this card?" — PSA fee schedule × predicted grade × graded market value = GO/NO-GO |
-| `GET /api/v1/simulate` | **$0.015** | "What will this card be worth in 90 days?" — Merton Jump-Diffusion Monte Carlo with VaR/CVaR and full percentile bands |
+| `GET /api/v1/simulate` | **$0.015** | "What will this card be worth in 90 days?" — conformal-calibrated risk forecast (default): honest VaR/CVaR, regime-aware percentile bands, plus Safe-Hold & Momentum letter grades. Monte Carlo GBM/Merton opt-in via `model=` |
 | `GET /api/v1/trending` | **$0.025** | "What's moving right now?" — Top 50 cards by 30-day sales volume and price velocity |
 | `GET /api/v1/arb-grade` | **$0.15** | "Where are the undervalued raw cards?" — Scans database for cards where grading ROI exceeds threshold |
 | `POST /api/v1/batch-triage` | **$0.50** | "Which of these 20 cards should I grade first?" — Profit-ranked grading triage |

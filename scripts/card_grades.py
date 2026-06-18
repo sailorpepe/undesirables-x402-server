@@ -10,9 +10,8 @@ card_grades.py — two pure letter-grade functions for the forecast product.
                the noisiest part of the model -> treat MOMENTUM as the softer signal.
 
 Cut-points validated 2026-06-18 against forecast_ledger.sqlite (model=conformal,
-2000 cards, 30d horizon). Deterministic; stdlib only (no random/scipy/sklearn);
-no Heston/Kou. NOT wired into server.py / the /card page yet — that's the next
-step once the cut-points are blessed.
+2000 cards, 30d horizon). Deterministic; stdlib only (no random/scipy/sklearn). Wired into
+GET /card/<id> and the daily forecast tweet (2026-06-18).
 
 Inputs are the signed percents the conformal forecast already emits:
   var95_pct, var99_pct : e.g. -8.3 means a 5% chance of an 8.3% drop (negative).

@@ -25,7 +25,7 @@ async def main():
     register_exact_evm_client(client, EthAccountSigner(account))
     
     # We must append query string since /simulate requires parameters:
-    endpoint = "https://oracle.the-undesirables.com/api/v1/simulate?card_name=Charizard&current_price=350.00&model=heston"
+    endpoint = "https://oracle.the-undesirables.com/api/v1/simulate?card_name=Charizard&current_price=350.00&model=conformal"
     
     print(f"🚀 Triggering MANUAL x402 Handshake...")
     
