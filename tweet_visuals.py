@@ -86,70 +86,54 @@ def _save(fig, name):
 # 1. MONTE CARLO FAN CHART
 # ---------------------------------------------------------------------------
 def generate_simulate(data):
-    """Fan chart showing Monte Carlo simulation paths with percentile bands."""
+    """Fan chart of the CONFORMAL-calibrated risk forecast (per-step honest bands)."""
     _setup_style()
 
     price = data["current_price"]
-    vol = data["volatility"] / 100
-    drift = data["drift"] / 100
     name = data["card_name"]
-    sims = 2000
+    regime = data.get("regime", "global")
     days = 30
+    bands = data.get("bands")
 
-    # Generate paths
-    np.random.seed(42)
-    dt = 1 / 365
-    paths = np.zeros((sims, days + 1))
-    paths[:, 0] = price
-    for t in range(1, days + 1):
-        z = np.random.normal(size=sims)
-        paths[:, t] = paths[:, t-1] * np.exp((drift - 0.5 * vol**2) * dt + vol * np.sqrt(dt) * z)
-
-    # Percentiles
-    p5 = np.percentile(paths, 5, axis=0)
-    p25 = np.percentile(paths, 25, axis=0)
-    p50 = np.percentile(paths, 50, axis=0)
-    p75 = np.percentile(paths, 75, axis=0)
-    p95 = np.percentile(paths, 95, axis=0)
+    if bands and bands.get("p50") and len(bands["p50"]) == days + 1:
+        p5 = np.array(bands["p5"]); p25 = np.array(bands["p25"]); p50 = np.array(bands["p50"])
+        p75 = np.array(bands["p75"]); p95 = np.array(bands["p95"])
+    else:
+        # fallback: linear cone from current price to the terminal percentiles
+        f = np.linspace(0, 1, days + 1)
+        p5 = price + f * (data["p5"] - price); p25 = price + f * (data["p25"] - price)
+        p50 = price + f * (data["p50"] - price); p75 = price + f * (data["p75"] - price)
+        p95 = price + f * (data["p95"] - price)
     x = np.arange(days + 1)
 
     fig, ax = plt.subplots(figsize=(12, 6.5))
 
-    # Fan bands
-    ax.fill_between(x, p5, p95, alpha=0.15, color=ACCENT_BLUE, label="5th–95th")
-    ax.fill_between(x, p25, p75, alpha=0.25, color=ACCENT_BLUE, label="25th–75th")
-
-    # Sample paths (faint)
-    for i in range(min(80, sims)):
-        ax.plot(x, paths[i], alpha=0.04, color=ACCENT_BLUE, linewidth=0.5)
-
-    # Median
+    # Calibrated bands (deterministic — no simulation; widths are the conformal offsets)
+    ax.fill_between(x, p5, p95, alpha=0.15, color=ACCENT_BLUE, label="5th–95th (90% band)")
+    ax.fill_between(x, p25, p75, alpha=0.28, color=ACCENT_BLUE, label="25th–75th (50% band)")
     ax.plot(x, p50, color=ACCENT_GOLD, linewidth=2.5, label="Median", zorder=5)
+    ax.plot(x, p5, color=ACCENT_RED, linewidth=1.0, alpha=0.6, label="95% VaR floor")
 
-    # Current price line
     ax.axhline(y=price, color=TEXT_SECONDARY, linewidth=1, linestyle="--", alpha=0.5)
     ax.text(days + 0.5, price, f"${price:.2f}", fontsize=10, color=TEXT_SECONDARY, va="center")
 
-    # End markers
     final_median = p50[-1]
     color = ACCENT_GREEN if final_median > price else ACCENT_RED
     ax.plot(days, final_median, "o", color=color, markersize=8, zorder=6)
     ax.text(days + 0.5, final_median, f"${final_median:.2f}", fontsize=11,
             fontweight="bold", color=color, va="center")
 
-    # Labels
     ax.set_xlabel("Days", fontsize=12)
     ax.set_ylabel("Price ($)", fontsize=12)
-    ax.set_title(f"Monte Carlo Forecast: {name}", fontsize=18, fontweight="bold",
+    ax.set_title(f"Risk Forecast: {name}", fontsize=18, fontweight="bold",
                  color=TEXT_PRIMARY, pad=15)
 
-    # Stats box
-    upside = data["upside_prob"]
+    var = data.get("var95_pct")
     stats_text = (f"Current: ${price:.2f}\n"
                   f"Median 30d: ${final_median:.2f}\n"
-                  f"Upside prob: {upside:.0f}%\n"
-                  f"Volatility: {data['volatility']}%\n"
-                  f"Sims: {sims:,}")
+                  f"Regime: {regime}\n"
+                  f"Upside prob: {data['upside_prob']:.0f}%"
+                  + (f"\n95% VaR: {var:.0f}%" if var is not None else ""))
     props = dict(boxstyle="round,pad=0.6", facecolor=BG_COLOR, edgecolor=GRID_COLOR, alpha=0.9)
     ax.text(0.02, 0.98, stats_text, transform=ax.transAxes, fontsize=10,
             verticalalignment="top", bbox=props, color=TEXT_PRIMARY, family="monospace")
@@ -158,7 +142,7 @@ def generate_simulate(data):
     ax.grid(True, alpha=0.3)
     ax.set_xlim(0, days + 3)
 
-    _add_branding(fig, "Merton Jump-Diffusion · 2,000 simulations · 30-day horizon")
+    _add_branding(fig, "Conformal-calibrated · regime-aware bands · 30-day · honest VaR")
     return _save(fig, "simulate")
 
 
