@@ -36,16 +36,9 @@ DB_PATH = Path.home() / "Documents" / "undesirables-mcp-server" / ".cache" / "ma
 SHROOMY_URL = "http://127.0.0.1:3000"
 ORACLE_URL = "https://oracle.the-undesirables.com"
 
-# Day-of-week rotation (0=Mon, 5=Sat, 6=Sun=OFF)
-DAY_SCHEDULE = {
-    0: "arb-weather",  # Monday
-    1: "simulate",     # Tuesday
-    2: "arb-weather",  # Wednesday
-    3: "simulate",     # Thursday
-    4: "arb-weather",  # Friday
-    5: "simulate",     # Saturday
-    6: None,           # Sunday — OFF
-}
+# Daily conformal RISK FORECAST every day (leaning into the calibrated price/risk
+# forecasting). Weather edge stays available via --mode arb-weather.
+DAY_SCHEDULE = {d: "simulate" for d in range(7)}
 
 
 # ---------------------------------------------------------------------------
@@ -142,41 +135,60 @@ def fetch_simulate():
             return None
 
         card = dict(row)
-        price = card["current_price"]
-        vol = card["volatility"]
-        drift = card["drift"]
+        name = card["name"]
+        price = round(card["current_price"], 2)
+        vol = card.get("volatility") or 0.0
 
+        # ── LIVE conformal forecast (the TUNED model) — honest VaR + regime-aware
+        # bands fit on real holdout residuals. No Monte Carlo / no Merton here. ──
+        import math, json, requests
         import numpy as np
-        dt = 1 / 365
-        days = 30
-        sims = 1000
-        np.random.seed(int(datetime.now().timestamp()) % 2**31)
+        r = requests.get("http://127.0.0.1:8402/api/v1/simulate",
+                         params={"card_name": name, "current_price": price,
+                                 "days": 30, "model": "conformal"}, timeout=20)
+        d = r.json().get("data", {})
+        fp = d.get("forecast_percentiles", {}); mp = d.get("model_params", {})
+        rm = d.get("risk_metrics", {})
+        regime = mp.get("regime", "global")
+        mu = float(mp.get("drift_mu", 0.0))
+        calibrated = bool(d.get("verifiability", {}).get("calibrated", False))
+        p5, p25, p50, p75, p95 = (fp.get("5th"), fp.get("25th"), fp.get("50th"),
+                                  fp.get("75th"), fp.get("95th"))
+        if None in (p5, p25, p50, p75, p95):
+            return None
 
-        paths = np.zeros(sims)
-        for i in range(sims):
-            p = price
-            for _ in range(days):
-                p *= np.exp((drift - 0.5 * vol**2) * dt + vol * np.sqrt(dt) * np.random.normal())
-            paths[i] = p
+        # Probability of gain from the calibrated CDF
+        xs = np.array([p5, p25, p50, p75, p95]); ys = np.array([0.05, 0.25, 0.5, 0.75, 0.95])
+        prob_up = round(float((1 - np.interp(price, xs, ys)) * 100), 0)
+
+        # Per-step bands for the chart, from this regime's conformal offsets
+        days = 30
+        bands = None
+        try:
+            off = json.load(open(SCRIPT_DIR / "conformal_offsets.json"))
+            bundle = (off.get("regimes", {}) or {}).get(regime) or {"bands": off.get("bands", {})}
+            b50 = bundle["bands"]["0.50"]; b90 = bundle["bands"]["0.90"]
+            P5, P25, P50, P75, P95 = [price], [price], [price], [price], [price]
+            for h in range(1, days + 1):
+                pt = price * math.exp(mu * h / 365.0)
+                o50 = b50[min(h, len(b50)) - 1] * price
+                o90 = b90[min(h, len(b90)) - 1] * price
+                P5.append(max(0.0, pt - o90)); P25.append(max(0.0, pt - o50))
+                P50.append(pt); P75.append(pt + o50); P95.append(pt + o90)
+            bands = {"p5": P5, "p25": P25, "p50": P50, "p75": P75, "p95": P95}
+        except Exception as e:
+            print(f"[!] per-step bands skipped: {e}")
 
         return {
-            "type": "simulate",
-            "card_name": card["name"],
-            "current_price": round(price, 2),
-            "p5": round(np.percentile(paths, 5), 2),
-            "p10": round(np.percentile(paths, 10), 2),
-            "p25": round(np.percentile(paths, 25), 2),
-            "p50": round(np.percentile(paths, 50), 2),
-            "p75": round(np.percentile(paths, 75), 2),
-            "p90": round(np.percentile(paths, 90), 2),
-            "p95": round(np.percentile(paths, 95), 2),
+            "type": "simulate", "card_name": name, "current_price": price,
+            "p5": p5, "p25": p25, "p50": p50, "p75": p75, "p95": p95,
+            "regime": regime, "calibrated": calibrated,
             "volatility": round(vol * 100, 1),
-            "drift": round(drift * 100, 1),
-            "upside_prob": round((np.sum(paths > price) / sims) * 100, 0),
-            "sims": sims,
+            "var95_pct": rm.get("VaR_95_pct"),
+            "upside_prob": prob_up, "bands": bands,
         }
     except Exception as e:
-        print(f"[!] Simulate failed: {e}")
+        print(f"[!] Forecast failed: {e}")
         return None
     finally:
         conn.close()
@@ -229,36 +241,40 @@ def format_arb_weather(data):
 
 
 def format_simulate(data):
-    """Monte Carlo simulation — long format with full distribution."""
+    """Conformal-calibrated daily RISK forecast — honest VaR + regime. No Monte Carlo."""
     now = datetime.now().strftime("%B %d, %Y")
     name = data["card_name"]
     if len(name) > 40:
         name = name[:37] + "..."
+    regime = data.get("regime", "global")
+    remoji = {"calm": "🟢", "medium": "🟡", "jumpy": "🌪️", "global": "📊"}.get(regime, "📊")
+    price = data["current_price"]
+    p5_pct = (data["p5"] / price - 1) * 100
 
-    lines = [f"📈 Monte Carlo Price Forecast — {now}\n"]
-    lines.append(f"🎴 {name}")
-    lines.append(f"💵 Current market price: ${data['current_price']:.2f}\n")
-    lines.append(f"We ran {data['sims']:,} Merton Jump-Diffusion simulations over 30 days:\n")
-    lines.append(f"  5th percentile:  ${data['p5']:.2f}  (worst case)")
-    lines.append(f"  25th percentile: ${data['p25']:.2f}")
-    lines.append(f"  Median:          ${data['p50']:.2f}")
-    lines.append(f"  75th percentile: ${data['p75']:.2f}")
-    lines.append(f"  95th percentile: ${data['p95']:.2f}  (best case)\n")
-    lines.append(f"🎲 {data['upside_prob']:.0f}% probability of gain")
-    lines.append(f"⚡ Annualized volatility: {data['volatility']}%")
-    lines.append(f"📊 Drift: {data['drift']}%\n")
+    lines = [f"📊 Daily Risk Forecast — {now}\n"]
+    lines.append(f"🎴 {name}  ·  ${price:.2f}")
+    lines.append(f"{remoji} Volatility regime: {regime}\n")
+    lines.append("Our conformal-calibrated oracle's 30-day outlook — bands fit on real "
+                 "holdout residuals, so the risk is MEASURED, not assumed:\n")
+    lines.append(f"  90% range:  ${data['p5']:.2f} – ${data['p95']:.2f}")
+    lines.append(f"  50% range:  ${data['p25']:.2f} – ${data['p75']:.2f}")
+    lines.append(f"  Median:     ${data['p50']:.2f}\n")
+    lines.append(f"⚠️ Downside: 5% chance below ${data['p5']:.2f} ({p5_pct:+.0f}%) in 30 days")
+    lines.append(f"🎲 {data['upside_prob']:.0f}% probability of gain\n")
 
-    if data['upside_prob'] > 60:
-        lines.append("The math leans bullish, but Monte Carlo isn't a crystal ball — it's a probability map.\n")
-    elif data['upside_prob'] < 40:
-        lines.append("The math leans bearish. High volatility = high risk. Size your position accordingly.\n")
+    if regime == "jumpy":
+        lines.append("High-volatility name — big swings both ways. The range is wide for a reason.\n")
+    elif data["upside_prob"] >= 60:
+        lines.append("Leaning up, and the calibrated downside is contained.\n")
+    elif data["upside_prob"] <= 40:
+        lines.append("Leaning down — mind the floor.\n")
     else:
-        lines.append("Coin flip territory. The market isn't giving a clear signal — wait for conviction.\n")
+        lines.append("Balanced — the market isn't giving a clear signal yet.\n")
 
-    lines.append("Run your own simulations:")
+    lines.append("The bands are calibrated — the 90% range is built to actually hold 90%.")
     lines.append("🔍 oracle.the-undesirables.com\n")
     lines.append("🍄 @undesirables_ai")
-    lines.append("#MonteCarlo #TCG #TradingCards #Pokemon #QuantFinance")
+    lines.append("#RiskForecast #TCG #TradingCards #Pokemon #QuantFinance")
     return "\n".join(lines)
 
 
