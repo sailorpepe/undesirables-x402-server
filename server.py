@@ -901,16 +901,19 @@ async def health():
 
 _CARD_CSS = """<style>
  body{background:#0d1117;color:#e6edf3;font-family:-apple-system,system-ui,sans-serif;margin:0;padding:24px;line-height:1.55}
- .wrap{max-width:620px;margin:0 auto}
+ .wrap{max-width:760px;margin:0 auto}
  .name{font-size:26px;font-weight:700;margin:0 0 2px}
  .sub{color:#8b949e;font-size:14px;margin-bottom:18px}
  .price{color:#f0b429;font-weight:600}
- .card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:16px 20px;margin:14px 0}
+ .main{display:flex;gap:22px;flex-wrap:wrap;align-items:flex-start}
+ .img{width:240px;border-radius:12px;border:1px solid #30363d;flex-shrink:0;background:#161b22}
+ .col{flex:1;min-width:300px}
+ .card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:16px 20px;margin:0 0 14px}
  .hd{font-size:13px;color:#8b949e;margin-bottom:10px}
  .row{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #21262d}
  .row:last-child{border:0}.lbl{color:#8b949e}.val{font-weight:600;font-variant-numeric:tabular-nums}
  .warn{color:#f85149}.up{color:#3fb950}
- .foot{color:#8b949e;font-size:13px;margin-top:16px}a{color:#58a6ff;text-decoration:none}
+ .foot{color:#8b949e;font-size:13px;margin-top:14px}a{color:#58a6ff;text-decoration:none}
 </style>"""
 
 _CARD_GAMES = {1: "Magic", 2: "Yu-Gi-Oh!", 3: "Pokemon", 62: "Flesh and Blood", 63: "Digimon",
@@ -958,16 +961,24 @@ async def card_page(product_id: int):
     calbadge = " · ✓ calibrated" if cal else ""
     enc = name.replace(" ", "%20").replace("&", "%26")
     api = f"https://oracle.the-undesirables.com/api/v1/simulate?card_name={enc}&current_price={price}&days=30&model=conformal"
+    img_sm = f"https://product-images.tcgplayer.com/fit-in/437x437/{product_id}.jpg"
+    img_lg = f"https://tcgplayer-cdn.tcgplayer.com/product/{product_id}_in_1000x1000.jpg"
     title = f"{name} — {game} Risk Forecast"
     desc = f"30-day conformal forecast: 90% range ${p5:.2f}-${p95:.2f}; 5% chance below ${p5:.2f}. Calibrated, honest VaR."
     html = (f"<!doctype html><html><head><meta charset=utf-8>"
             f"<meta name=viewport content='width=device-width,initial-scale=1'>"
             f"<title>{title}</title><meta property='og:title' content='{title}'>"
-            f"<meta property='og:description' content='{desc}'><meta name='twitter:card' content='summary'>"
+            f"<meta property='og:description' content='{desc}'>"
+            f"<meta property='og:image' content='{img_lg}'>"
+            f"<meta name='twitter:card' content='summary_large_image'>"
+            f"<meta name='twitter:image' content='{img_lg}'>"
             f"{_CARD_CSS}</head><body><div class=wrap>"
             f"<div class=name>🎴 {name}</div>"
             f"<div class=sub>{game} · as of {asof} · <span class=price>${price:,.2f}</span> · "
             f"<span style='padding:3px 10px;border-radius:12px;font-weight:600;color:{rcolor};border:1px solid {rcolor}'>{regime} volatility</span></div>"
+            f"<div class=main>"
+            f"<img class=img src='{img_sm}' alt='{name}' loading='lazy'>"
+            f"<div class=col>"
             f"<div class=card><div class=hd>Conformal-calibrated 30-day forecast — bands fit on real holdout residuals{calbadge}</div>"
             f"<div class=row><span class=lbl>90% range</span><span class=val>${p5:,.2f} – ${p95:,.2f}</span></div>"
             f"<div class=row><span class=lbl>50% range</span><span class=val>${p25:,.2f} – ${p75:,.2f}</span></div>"
@@ -977,7 +988,7 @@ async def card_page(product_id: int):
             f"<div class=foot>The 90% range is calibrated to actually hold 90% of the time. <a href='{api}'>Raw forecast (JSON) →</a></div>"
             f"<div class=foot>🍄 <a href='https://x.com/undesirables_ai'>@undesirables_ai</a> · "
             f"<a href='https://oracle.the-undesirables.com'>oracle.the-undesirables.com</a></div>"
-            f"</div></body></html>")
+            f"</div></div></div></body></html>")
     return HTMLResponse(html)
 
 
