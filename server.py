@@ -961,6 +961,17 @@ async def card_page(product_id: int):
     game = _CARD_GAMES.get(cat, "TCG")
     rcolor = {"calm": "#3fb950", "medium": "#f0b429", "jumpy": "#f85149"}.get(regime, "#58a6ff")
     calbadge = " · ✓ calibrated" if cal else ""
+    # Letter grades (validated cut-points; N/A on a drift spike)
+    import sys as _gs
+    _gs.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts"))
+    from card_grades import safe_hold_grade, momentum_grade
+    sg = safe_hold_grade(rm.get("VaR_95_pct", 0.0), rm.get("CVaR_95_pct", 0.0))
+    emove_pct = (p50 / price - 1) * 100
+    mg = "N/A" if fc["model_params"].get("drift_spike") else momentum_grade(emove_pct, prob_up / 100.0)
+
+    def _gcolor(g):
+        return ("#3fb950" if g in ("A+", "A") else "#f0b429" if g in ("B", "C")
+                else "#8b949e" if g == "N/A" else "#f85149")
     enc = name.replace(" ", "%20").replace("&", "%26")
     api = f"https://oracle.the-undesirables.com/api/v1/simulate?card_name={enc}&current_price={price}&days=30&model=conformal"
     img_sm = f"https://product-images.tcgplayer.com/fit-in/437x437/{product_id}.jpg"
@@ -979,6 +990,13 @@ async def card_page(product_id: int):
             f"<div class=name>🎴 {name}</div>"
             f"<div class=sub>{game} · as of {asof} · <span class=price>${price:,.2f}</span> · "
             f"<span style='padding:3px 10px;border-radius:12px;font-weight:600;color:{rcolor};border:1px solid {rcolor}'>{regime} volatility</span></div>"
+            f"<div style='display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px'>"
+            f"<div style='background:#161b22;border:1px solid {_gcolor(sg)};border-radius:10px;padding:8px 16px;text-align:center'>"
+            f"<div style='color:#8b949e;font-size:11px;letter-spacing:.5px'>SAFE-HOLD</div>"
+            f"<div style='font-size:24px;font-weight:800;color:{_gcolor(sg)}'>{sg}</div></div>"
+            f"<div style='background:#161b22;border:1px solid {_gcolor(mg)};border-radius:10px;padding:8px 16px;text-align:center'>"
+            f"<div style='color:#8b949e;font-size:11px;letter-spacing:.5px'>MOMENTUM</div>"
+            f"<div style='font-size:24px;font-weight:800;color:{_gcolor(mg)}'>{mg}</div></div></div>"
             f"<div class=main>"
             f"<img class=img src='{img_sm}' alt='{name}' loading='lazy'>"
             f"<div class=col>"
@@ -2418,6 +2436,7 @@ def _get_calibrated_params(card_name: str) -> dict:
                 return {
                     "mu_annual": round(mu, 4),
                     "sigma_annual": round(sigma, 4),
+                    "drift_spike": False,
                     "jump_intensity_lambda": 2.0,
                     "jump_mean_mu_j": -0.05,
                     "jump_vol_sigma_j": 0.10,
@@ -2569,6 +2588,11 @@ def _get_calibrated_params(card_name: str) -> dict:
             if denominator > 0:
                 autocorr_score = round(numerator / denominator, 4)
 
+        # Drift-spike flag from the RAW (pre-clamp) drift: a runaway forecast on a
+        # recently-spiked card (30d move > 50%) is untrustworthy -> grades show N/A,
+        # not a fake A+. (mu_est is still raw here; the clamp below bounds the point.)
+        drift_spike = (math.exp(mu_est * 30.0 / 365.0) - 1.0) > 0.50
+
         # Sanity clamps
         sigma_est = max(0.10, min(sigma_est, 3.0))
         mu_est = max(-1.0, min(mu_est, 2.0))
@@ -2578,6 +2602,7 @@ def _get_calibrated_params(card_name: str) -> dict:
         return {
             "mu_annual": round(mu_est, 4),
             "sigma_annual": round(sigma_est, 4),
+            "drift_spike": drift_spike,
             "jump_intensity_lambda": round(lambda_jump, 4),
             "jump_mean_mu_j": round(mu_j, 4),
             "jump_vol_sigma_j": round(sigma_j, 4),
@@ -2779,6 +2804,7 @@ def _conformal_forecast(card_name, current_price, days):
     cal = _get_calibrated_params(card_name)
     mu = cal["mu_annual"] if cal else 0.03
     sigma = cal.get("sigma_annual") if cal else None
+    dspike = bool(cal.get("drift_spike", False)) if cal else False
     off = _load_conformal_offsets()
     h = max(1, int(days))
 
@@ -2817,7 +2843,8 @@ def _conformal_forecast(card_name, current_price, days):
     return {
         "card_name": card_name, "current_price": current_price, "model": "conformal_drift", "days": h,
         "param_source": ("calibrated_from_market_data" if cal else "default_tcg_priors"),
-        "model_params": {"drift_mu": round(mu, 4), "base": "drift", "method": "split_conformal", "regime": regime},
+        "model_params": {"drift_mu": round(mu, 4), "base": "drift", "method": "split_conformal",
+                         "regime": regime, "drift_spike": dspike},
         "forecast_percentiles": {
             "5th": round(max(0.0, point - off90), 4), "25th": round(max(0.0, point - off50), 4),
             "50th": round(point, 4), "75th": round(point + off50, 4), "95th": round(point + off90, 4),

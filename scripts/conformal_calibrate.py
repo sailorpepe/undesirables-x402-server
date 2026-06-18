@@ -64,10 +64,12 @@ def served_params(dates, prices):
     elif len(daily) >= 5:
         sigma = statistics.stdev(daily) * math.sqrt(365)
     else:
-        return None, None
+        return None, None, None
     cagr = math.log(prices[-1] / prices[0]) / years
     mu = cagr + 0.5 * sigma ** 2
-    return round(mu, 4), round(sigma, 4)
+    spike = (math.exp(mu * 30.0 / 365.0) - 1.0) > 0.50    # raw 30d move > 50% (drift spike)
+    mu = max(-1.0, min(mu, 2.0))                          # mirror server _get_calibrated_params clamp
+    return round(mu, 4), round(sigma, 4), spike
 
 
 def conf_q(scores, cov):
@@ -110,7 +112,7 @@ def feat(card):
     cd, cp = dates[:-H], prices[:-H]
     if len(cp) < 5:
         return None
-    mu, sigma = served_params(cd, cp)
+    mu, sigma, _ = served_params(cd, cp)
     if mu is None:
         return None
     S0 = cp[-1]; actual = prices[-H:]
