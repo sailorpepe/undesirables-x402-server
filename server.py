@@ -946,6 +946,7 @@ _CARD_CSS = """<style>
  .warn{color:#f85149}.up{color:#3fb950}
  .foot{color:#8b949e;font-size:13px;margin-top:14px}a{color:#58a6ff;text-decoration:none}
  @media(max-width:560px){body{padding:16px}.name{font-size:21px}.sub{font-size:13px}
+  .main{flex-direction:column}
   .img{width:100%;max-width:300px;display:block;margin:0 auto 4px}.col{min-width:0;width:100%}}
 </style>"""
 
