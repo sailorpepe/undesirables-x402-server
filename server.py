@@ -333,6 +333,37 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 # Static files — serves WebMCP module for AI agent discovery
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
+# ── Request instrumentation (additive) — UA + ts + path + status -> jsonl ──
+# Lets us see WHICH agents/clients call (ClaudeBot/GPTBot/ElizaOS/curl/browsers)
+# and build real 7d/30d usage. No response-shape change. Skips health/favicon noise.
+_REQLOG = os.path.join(os.path.expanduser("~"), "logs", "oracle_requests.jsonl")
+_REQLOG_SKIP = ("/health", "/favicon")
+
+
+@app.middleware("http")
+async def _request_logger(request, call_next):
+    import time as _t
+    from datetime import datetime, timezone
+    t0 = _t.time()
+    response = await call_next(request)
+    path = request.url.path
+    if not path.startswith(_REQLOG_SKIP):
+        try:
+            rec = {
+                "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "ip": (request.client.host if request.client else None),
+                "method": request.method, "path": path, "status": response.status_code,
+                "ms": int((_t.time() - t0) * 1000),
+                "ua": request.headers.get("user-agent", "")[:300],
+                "ref": request.headers.get("referer", "")[:200],
+            }
+            os.makedirs(os.path.dirname(_REQLOG), exist_ok=True)
+            with open(_REQLOG, "a", encoding="utf-8") as f:
+                f.write(json.dumps(rec) + "\n")
+        except Exception:
+            pass
+    return response
+
 # ---------------------------------------------------------------------------
 # x402 Middleware — Route-based payment gating
 # ---------------------------------------------------------------------------
@@ -922,6 +953,23 @@ _CARD_GAMES = {1: "Magic", 2: "Yu-Gi-Oh!", 3: "Pokemon", 62: "Flesh and Blood", 
                68: "One Piece", 71: "Lorcana", 79: "Star Wars Unlimited", 80: "Dragon Ball Super",
                81: "Union Arena", 85: "Pokemon (JP)", 86: "Gundam", 89: "Riftbound"}
 
+# Letter grades are shared with the daily tweet + /card page (scripts/card_grades.py).
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts"))
+from card_grades import safe_hold_grade, momentum_grade
+
+
+def _prob_up_from_bands(price, p5, p25, p50, p75, p95):
+    """P(price_h > price) via the piecewise-linear CDF through the published
+    percentiles — the same read the /card page uses. Returns 0..1."""
+    xs = [p5, p25, p50, p75, p95]; ys = [0.05, 0.25, 0.5, 0.75, 0.95]; cdf = 0.05
+    if price >= xs[-1]:
+        cdf = 0.95
+    elif price > xs[0]:
+        for i in range(1, 5):
+            if price <= xs[i] and xs[i] > xs[i - 1]:
+                cdf = ys[i - 1] + (price - xs[i - 1]) / (xs[i] - xs[i - 1]) * (ys[i] - ys[i - 1]); break
+    return max(0.0, min(1.0, 1 - cdf))
+
 
 @app.get("/card/{product_id}", tags=["Info"], response_class=HTMLResponse)
 async def card_page(product_id: int):
@@ -1051,11 +1099,23 @@ GET /card/{product_id}
   A shareable page: card image, 30-day conformal range, median, 95% VaR,
   probability of gain, and the volatility regime. product_id is the TCGplayer ID.
 
+## FREE forecast API for agents (no payment, no key)
+- GET /api/v1/forecast
+    Bulk board: the published top ~200 cards by liquidity, each with the 30-day
+    conformal forecast + Safe-Hold & Momentum letter grades. Cached nightly. This
+    is the best single call for a market overview.
+- GET /api/v1/forecast/{product_id}
+    Per-card, agent-COMPLETE JSON for ANY card: name, game, price, as_of, regime,
+    point, move_pct, prob_up, band50_pct, band90_pct, var95_pct, var99_pct, low90,
+    high90, safe_hold, momentum (or "NA" on a drift spike), drift_spike, image_url,
+    card_url, and a one-line plain_english read.
+
 ## Key endpoints (https://oracle.the-undesirables.com)
 - GET /api/v1/simulate?card_name=&current_price=&days=30&model=conformal
     Default forecast. Returns: forecast_percentiles {5th,25th,50th,75th,95th},
-    risk_metrics {VaR_95, VaR_95_pct, CVaR_95}, model_params {regime, method},
-    verifiability {calibrated: true|false}. model= conformal (default) | merton | gbm.
+    risk_metrics {VaR_95, VaR_95_pct, CVaR_95}, grades {safe_hold, momentum,
+    move_pct, prob_up}, model_params {regime, method}, verifiability {calibrated}.
+    model= conformal (default) | merton | gbm.
 - GET /api/v1/search?query=          resolve a name -> product_id + current price
 - GET /api/v1/price?product_id=&days=
 - GET /api/v1/graded?product_id= | ?name=    PSA graded comps
@@ -1070,6 +1130,14 @@ GET /card/{product_id}
   not a normal-distribution assumption.
 - "regime" (calm/medium/jumpy): the card's volatility tercile. Wider bands on
   jumpy cards are honest, not noise.
+
+## Letter grades (safe_hold + momentum)
+- safe_hold (A+ A B C D F): capital-preservation grade from the calibrated 95% VaR
+  (with a 99% fat-tail guard). ABSOLUTE scale — A+ means genuinely low modeled
+  downside (<=5%), never graded on a curve.
+- momentum (A+ A B C D F, or "NA"): 30-day direction from the expected move, gated
+  by prob_up conviction. "NA" = the card tripped the drift-spike filter (recent
+  runaway move), so the direction is untrustworthy — treat as no-signal, not bullish.
 
 ## Notes for agents
 - Card image: https://product-images.tcgplayer.com/fit-in/437x437/{product_id}.jpg
@@ -1309,8 +1377,11 @@ async def ai_plugin():
         ),
         "description_for_model": (
             "TCG Oracle provides financial intelligence for collectible trading cards. "
+            "FREE for agents: GET /api/v1/forecast (bulk board of the top ~200 cards) and "
+            "GET /api/v1/forecast/{product_id} (any card) return a conformal-calibrated 30-day "
+            "price forecast with honest VaR plus Safe-Hold and Momentum letter grades — no payment. "
             "Use this when you need to: (1) grade a card image to predict PSA/Beckett scores, "
-            "(2) forecast future card prices using Monte Carlo simulation, "
+            "(2) forecast future card prices (conformal-calibrated risk forecast by default), "
             "(3) decide if grading a card is profitable (grade-or-not ROI engine), "
             "(4) find undervalued cards where grading produces high ROI, "
             "(5) optimize a card portfolio for risk-adjusted returns, "
@@ -1332,6 +1403,8 @@ async def ai_plugin():
             "payment_address": PAYMENT_ADDRESS,
             "facilitator": FACILITATOR_URL,
             "pricing": {
+                "/api/v1/forecast": "free",
+                "/api/v1/forecast/{product_id}": "free",
                 "/api/v1/search": "free",
                 "/api/v1/accuracy": "free",
                 "/api/v1/alerts/subscribe": "free",
@@ -2840,14 +2913,21 @@ def _conformal_forecast(card_name, current_price, days):
     cvar95 = max(0.0, point - tail("var99", 2.326))            # CVaR_95 ~ 99% tail (conservative proxy)
     var_pct = round((var95 - current_price) / current_price * 100, 2)
     cvar_pct = round((cvar95 - current_price) / current_price * 100, 2)
+    p5 = round(max(0.0, point - off90), 4); p25 = round(max(0.0, point - off50), 4)
+    p50 = round(point, 4); p75 = round(point + off50, 4); p95 = round(point + off90, 4)
+    move_pct = round((point / current_price - 1) * 100, 2)
+    prob_up = _prob_up_from_bands(current_price, p5, p25, p50, p75, p95)
+    safe_g = safe_hold_grade(var_pct, cvar_pct)
+    mom_g = "NA" if dspike else momentum_grade(move_pct, prob_up)
     return {
         "card_name": card_name, "current_price": current_price, "model": "conformal_drift", "days": h,
         "param_source": ("calibrated_from_market_data" if cal else "default_tcg_priors"),
         "model_params": {"drift_mu": round(mu, 4), "base": "drift", "method": "split_conformal",
                          "regime": regime, "drift_spike": dspike},
+        "grades": {"safe_hold": safe_g, "momentum": mom_g, "move_pct": move_pct,
+                   "prob_up": round(prob_up, 4), "drift_spike": dspike},
         "forecast_percentiles": {
-            "5th": round(max(0.0, point - off90), 4), "25th": round(max(0.0, point - off50), 4),
-            "50th": round(point, 4), "75th": round(point + off50, 4), "95th": round(point + off90, 4),
+            "5th": p5, "25th": p25, "50th": p50, "75th": p75, "95th": p95,
         },
         "risk_metrics": {
             "VaR_95": round(var95, 4), "VaR_95_pct": var_pct,
@@ -2865,6 +2945,121 @@ def _conformal_forecast(card_name, current_price, days):
             "reproduce": "point = current_price*exp(mu*days/365); band = point ± offsets[level][days]*current_price (offsets published in conformal_offsets.json).",
         },
     }
+
+
+# ── FREE public forecast API — agent-complete JSON (x402 stays OFF) ─────────
+def _ledger_path():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "forecast_ledger.sqlite")
+
+
+def _recover_spike(ds_val, off_val):
+    """True 0/1 drift_spike — robust to the legacy ALTER-append column mis-order."""
+    for v in (ds_val, off_val):
+        if v in (0, 1, "0", "1"):
+            return int(v)
+    return 0
+
+
+def _agent_obj(name, product_id, game, price, as_of, regime, point, low90, high90, p75,
+               var95_pct, var99_pct, prob_up, spike, safe, mom):
+    """Agent-COMPLETE forecast object: every number an agent needs to reason, plus
+    a one-line plain-English read and the image/permalink URLs."""
+    price = float(price)
+    move_pct = round((point / price - 1) * 100, 2) if price else 0.0
+    band50_pct = round((p75 - point) / price * 100, 2) if price else 0.0
+    band90_pct = round((high90 - point) / price * 100, 2) if price else 0.0
+    drop = round((1 - prob_up) * 100)
+    plain = (f"~{drop}% chance it's below today's ${price:,.0f} in 30 days "
+             f"(median ${point:,.0f}, {move_pct:+.1f}%). Safe-Hold {safe}, Momentum {mom}.")
+    return {
+        "name": name, "product_id": product_id, "game": game, "price": round(price, 2),
+        "as_of": as_of, "regime": regime, "horizon": 30,
+        "point": round(point, 2), "move_pct": move_pct, "prob_up": round(prob_up, 4),
+        "band50_pct": band50_pct, "band90_pct": band90_pct,
+        "var95_pct": var95_pct, "var99_pct": var99_pct,
+        "low90": round(low90, 2), "high90": round(high90, 2),
+        "safe_hold": safe, "momentum": mom, "drift_spike": bool(spike),
+        "image_url": f"https://product-images.tcgplayer.com/fit-in/437x437/{product_id}.jpg",
+        "card_url": f"https://oracle.the-undesirables.com/card/{product_id}",
+        "plain_english": plain,
+    }
+
+
+_FORECAST_BOARD = {"as_of": None, "payload": None}
+
+
+@app.get("/api/v1/forecast", tags=["Free"])
+async def forecast_board():
+    """FREE bulk board — the published top-~200 cards by liquidity with the
+    conformal 30-day forecast + Safe-Hold/Momentum grades. Same source as the
+    nightly forecast_feed; cached per ledger date. No payment, no API key."""
+    import sqlite3
+    lp = _ledger_path()
+    if not os.path.exists(lp):
+        return JSONResponse(status_code=503, content={"status": "unavailable", "reason": "ledger not present"})
+    led = sqlite3.connect(f"file:{lp}?mode=ro", uri=True)
+    as_of = led.execute("SELECT MAX(forecast_date) FROM forecast_ledger").fetchone()[0]
+    if _FORECAST_BOARD["as_of"] == as_of and _FORECAST_BOARD["payload"]:
+        led.close()
+        return _FORECAST_BOARD["payload"]
+    rows = led.execute(
+        """SELECT u.rank, l.product_id, l.card_name, l.current_price, l.point,
+                  l.band_50_high, l.band_90_low, l.band_90_high, l.var95_pct, l.var99_pct,
+                  l.regime, l.prob_up, l.drift_spike, l.offsets_fit_date
+           FROM forecast_ledger l JOIN forecast_universe u
+             ON l.forecast_date=u.forecast_date AND l.product_id=u.product_id AND l.sub_type=u.sub_type
+           WHERE l.forecast_date=? AND l.horizon=30 AND u.publish_flag=1
+           ORDER BY u.rank ASC""", [as_of]).fetchall()
+    led.close()
+    catmap = {}
+    db = _get_db()
+    if db:
+        try:
+            catmap = dict(db.execute("SELECT product_id, category_id FROM cards").fetchall())
+        finally:
+            db.close()
+    cards = []
+    for (rank, pid, name, price, point, b50h, b90l, b90h, v95, v99, regime, pu, ds, off) in rows:
+        if not price or price <= 0:
+            continue
+        spike = _recover_spike(ds, off)
+        pu = pu if pu is not None else 0.5
+        safe = safe_hold_grade(v95 if v95 is not None else 0.0, v99 if v99 is not None else 0.0)
+        mom = "NA" if spike else momentum_grade((point / price - 1) * 100, pu)
+        game = _CARD_GAMES.get(catmap.get(pid), "TCG")
+        cards.append(_agent_obj(name, pid, game, price, as_of, regime, point,
+                                b90l, b90h, b50h, v95, v99, pu, spike, safe, mom))
+    payload = {"as_of": as_of, "horizon": 30, "count": len(cards),
+               "source": "published top-liquidity universe — free, conformal, cached nightly",
+               "cards": cards}
+    _FORECAST_BOARD.update(as_of=as_of, payload=payload)
+    return payload
+
+
+@app.get("/api/v1/forecast/{product_id}", tags=["Free"])
+async def forecast_card(product_id: int):
+    """FREE per-card conformal 30-day forecast + Safe-Hold/Momentum grades as
+    agent-complete JSON. Works for ANY product_id (computed live), not just the board."""
+    db = _get_db()
+    row = pr = None
+    if db:
+        try:
+            row = db.execute("SELECT name, category_id FROM cards WHERE product_id=?", [product_id]).fetchone()
+            if row:
+                pr = db.execute("SELECT market_price, date FROM price_history WHERE product_id=? "
+                                "AND market_price>0 ORDER BY date DESC LIMIT 1", [product_id]).fetchone()
+        finally:
+            db.close()
+    if not row or not pr:
+        return JSONResponse(status_code=404, content={"status": "not_found", "product_id": product_id})
+    name = row[0]; game = _CARD_GAMES.get(row[1], "TCG"); price = float(pr[0]); as_of = pr[1]
+    fc = _conformal_forecast(name, price, 30)
+    fp = fc["forecast_percentiles"]; rm = fc["risk_metrics"]; g = fc["grades"]
+    return _agent_obj(name, product_id, game, price, as_of,
+                      fc["model_params"].get("regime", "global"),
+                      fp["50th"], fp["5th"], fp["95th"], fp["75th"],
+                      rm.get("VaR_95_pct"), rm.get("CVaR_95_pct"), g["prob_up"],
+                      g["drift_spike"], g["safe_hold"], g["momentum"])
 
 
 @app.get("/api/v1/simulate", tags=["Paid — $0.015"])
