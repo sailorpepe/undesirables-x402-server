@@ -172,7 +172,14 @@ def main():
                    round(max(0.0, point - off90), 4), round(point + off90, 4),
                    round((var95 - S0) / S0 * 100, 2), round((var99 - S0) / S0 * 100, 2),
                    regime, mu, sigma, prob_up(point, off50, off90, S0), int(spike), fit_date, now)
-            cur = led.execute("INSERT OR IGNORE INTO forecast_ledger VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", row)
+            # named columns: robust to drift_spike being ALTER-appended last on
+            # pre-existing tables (positional VALUES mis-mapped spike/fit_date/created_at).
+            cur = led.execute(
+                "INSERT OR IGNORE INTO forecast_ledger "
+                "(forecast_date, product_id, card_name, sub_type, horizon, current_price, point, "
+                " band_50_low, band_50_high, band_90_low, band_90_high, var95_pct, var99_pct, "
+                " regime, mu_annual, sigma_annual, prob_up, drift_spike, offsets_fit_date, created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", row)
             if cur.rowcount: written += 1
             else: skipped += 1
     led.commit()
