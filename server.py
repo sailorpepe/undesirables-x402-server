@@ -1110,6 +1110,13 @@ GET /card/{product_id}
     high90, safe_hold, momentum (or "NA" on a drift spike), drift_spike, image_url,
     card_url, and a one-line plain_english read.
 
+## One-call MCP tool (Claude / Cursor / ElizaOS)
+pip install undesirables-mcp-server  (>= 1.1.8 — https://pypi.org/project/undesirables-mcp-server/).
+The card_forecast(card_name | product_id) tool returns the per-card object above
+plus the plain-English read in a SINGLE free call — the fastest way to pull a
+card's risk + Safe-Hold/Momentum grades into an agent. It wraps
+GET /api/v1/forecast/{product_id} (resolving a name via /api/v1/search first).
+
 ## Key endpoints (https://oracle.the-undesirables.com)
 - GET /api/v1/simulate?card_name=&current_price=&days=30&model=conformal
     Default forecast. Returns: forecast_percentiles {5th,25th,50th,75th,95th},
