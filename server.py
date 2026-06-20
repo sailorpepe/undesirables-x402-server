@@ -832,7 +832,7 @@ async def root():
     """Server info and available endpoints."""
     return {
         "name": "TCG Oracle — Financial Intelligence for Collectibles",
-        "tagline": "Monte Carlo forecasting, AI grading, and market intelligence for 370K+ trading cards across 25 games",
+        "tagline": "Conformal risk forecasts, AI grading, and Safe-Hold/Momentum card grades for 370K+ trading cards across 25 games",
         "version": "2.0.0",
         "x402_enabled": X402_ENABLED,
         "total_endpoints": 28,
