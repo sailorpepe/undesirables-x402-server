@@ -103,7 +103,7 @@ def deploy():
         "gas": 5000000, "gasPrice": w3.eth.gas_price,
     })
     signed = w3.eth.account.sign_transaction(tx, private_key)
-    tx_hash = w3.eth.send_raw_transaction(signed.rawTransaction)
+    tx_hash = w3.eth.send_raw_transaction(getattr(signed, "raw_transaction", None) or signed.rawTransaction)
     print(f"         TX: {tx_hash.hex()}")
 
     receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
@@ -142,7 +142,7 @@ def deploy():
             "gas": 8000000, "gasPrice": w3.eth.gas_price,
         })
         signed = w3.eth.account.sign_transaction(tx, private_key)
-        tx_hash = w3.eth.send_raw_transaction(signed.rawTransaction)
+        tx_hash = w3.eth.send_raw_transaction(getattr(signed, "raw_transaction", None) or signed.rawTransaction)
         receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
 
         if receipt.status != 1:
