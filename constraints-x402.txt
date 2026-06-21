@@ -1,0 +1,7 @@
+# Critical version window — do NOT violate or x402 payment gating breaks.
+# x402 needs web3>=7.0; cdp-sdk (CDP facilitator) needs web3<=7.10.0; the
+# on-chain pushers need eth-account>=0.13 (signed.raw_transaction, snake_case).
+# A stray web3 6.x downgrade is what disabled x402 (June 2026). Reinstall with:
+#   ./venv/bin/pip install -c constraints-x402.txt 'x402[evm]'
+web3>=7.6.0,<=7.10.0
+eth-account>=0.13.0
