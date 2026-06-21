@@ -288,7 +288,7 @@ async def lifespan(app: FastAPI):
 ║  Network: {NETWORK:<43}║
 ║  Port: {PORT:<46}║
 ║                                                      ║
-║  Free:    /api/v1/search, /api/v1/market             ║
+║  Free:    /api/v1/search, /api/v1/forecast           ║
 ║  $0.10:   /api/v1/grade                              ║
 ║  $0.015:  /api/v1/simulate                           ║
 ║  $0.05:   /api/v1/crypto-oracle                      ║
@@ -1462,8 +1462,8 @@ async def agent_card():
             {
                 "id": "market_data",
                 "name": "Market Data",
-                "description": "Daily TCGCSV market snapshots with top movers. Free.",
-                "tags": ["market", "prices", "free"],
+                "description": "Daily TCGCSV market snapshots with top movers. Paid — $0.025 USDC.",
+                "tags": ["market", "prices", "paid"],
             },
             {
                 "id": "grade_card",
@@ -1630,7 +1630,7 @@ WORKFLOW_CATALOG = {
         "name": "Get market overview",
         "triggers": ["market", "trending", "hot", "popular", "what's moving", "top cards", "volume"],
         "steps": [
-            {"endpoint": "/api/v1/market", "price": "free", "purpose": "Daily market snapshot with top movers"},
+            {"endpoint": "/api/v1/market", "price": "$0.025", "purpose": "Daily market snapshot with top movers"},
             {"endpoint": "/api/v1/trending", "price": "$0.025", "purpose": "Top 50 cards by sales volume and velocity"},
         ],
         "total_cost": "$0.025",
