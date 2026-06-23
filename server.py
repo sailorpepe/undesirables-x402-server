@@ -1886,14 +1886,18 @@ def market_snapshot(
 @limiter.limit("60/minute")
 def price_history(
     request: Request,
-    productId: int = Query(..., description="TCGPlayer product ID"),
+    productId: int = Query(None, description="TCGPlayer product ID"),
+    product_id: int = Query(None, description="Alias for productId (snake_case)"),
 ):
     """
     🆓 **FREE** — Price history for a single product.
 
     Returns up to 30 daily snapshots with market, low, mid, high prices,
-    plus product stats (views, sales, volatility).
+    plus product stats (views, sales, volatility). Accepts productId or product_id.
     """
+    pid = productId if productId is not None else product_id
+    if pid is None:
+        raise HTTPException(status_code=422, detail="provide productId (or product_id)")
     conn = _get_db()
     if not conn:
         raise HTTPException(status_code=503, detail="TCG database not available")
@@ -1909,12 +1913,12 @@ def price_history(
             WHERE product_id = ? AND market_price > 0
             ORDER BY date ASC
             """,
-            (productId,),
+            (pid,),
         )
         rows = cur.fetchall()
 
         if not rows:
-            return {"status": "ok", "data": {"product_id": productId, "prices": [], "total": 0}}
+            return {"status": "ok", "data": {"product_id": pid, "prices": [], "total": 0}}
 
         # Take last 30
         recent = rows[-30:]
@@ -1934,7 +1938,7 @@ def price_history(
                 FROM shroomy_stats
                 WHERE product_id = ?
                 """,
-                (productId,),
+                (pid,),
             )
             stat_row = cur.fetchone()
             if stat_row:
@@ -1948,7 +1952,7 @@ def price_history(
             pass  # shroomy_stats table may not exist
 
         # Get card name
-        cur.execute("SELECT name, clean_name, category_id FROM cards WHERE product_id = ?", (productId,))
+        cur.execute("SELECT name, clean_name, category_id FROM cards WHERE product_id = ?", (pid,))
         card_row = cur.fetchone()
         card_info = {}
         if card_row:
@@ -1970,7 +1974,7 @@ def price_history(
         return {
             "status": "ok",
             "data": {
-                "product_id": productId,
+                "product_id": pid,
                 **card_info,
                 "prices": prices,
                 "total": len(rows),
