@@ -198,6 +198,7 @@ GAME_CATEGORIES = {
     "pokemon japan": 85,
     "gundam": 86,
     "lol riftbound": 89, "league of legends": 89,
+    "vibes": 9001, "vibes tcg": 9001, "pudgy penguins": 9001,   # eBay-sourced interim (not in TCGCSV yet)
 }
 
 
@@ -952,7 +953,8 @@ _CARD_CSS = """<style>
 
 _CARD_GAMES = {1: "Magic", 2: "Yu-Gi-Oh!", 3: "Pokemon", 62: "Flesh and Blood", 63: "Digimon",
                68: "One Piece", 71: "Lorcana", 79: "Star Wars Unlimited", 80: "Dragon Ball Super",
-               81: "Union Arena", 85: "Pokemon (JP)", 86: "Gundam", 89: "Riftbound"}
+               81: "Union Arena", 85: "Pokemon (JP)", 86: "Gundam", 89: "Riftbound",
+               9001: "Vibes TCG"}
 
 # Letter grades are shared with the daily tweet + /card page (scripts/card_grades.py).
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts"))
