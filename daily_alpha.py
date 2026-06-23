@@ -150,27 +150,25 @@ def fetch_simulate():
         price = round(card["current_price"], 2)
         vol = card.get("volatility") or 0.0
 
-        # ── LIVE conformal forecast (the TUNED model) — honest VaR + regime-aware
-        # bands fit on real holdout residuals. No Monte Carlo / no Merton here. ──
+        # ── Conformal forecast via the FREE per-card endpoint. x402 is ON, so the
+        # paid /api/v1/simulate would 402 for this internal job — use the free
+        # /api/v1/forecast/{id}, which already returns the grades + all numbers. ──
         import math, json, requests
-        import numpy as np
-        r = requests.get("http://127.0.0.1:8402/api/v1/simulate",
-                         params={"card_name": name, "current_price": price,
-                                 "days": 30, "model": "conformal"}, timeout=20)
-        d = r.json().get("data", {})
-        fp = d.get("forecast_percentiles", {}); mp = d.get("model_params", {})
-        rm = d.get("risk_metrics", {})
-        regime = mp.get("regime", "global")
-        mu = float(mp.get("drift_mu", 0.0))
-        calibrated = bool(d.get("verifiability", {}).get("calibrated", False))
-        p5, p25, p50, p75, p95 = (fp.get("5th"), fp.get("25th"), fp.get("50th"),
-                                  fp.get("75th"), fp.get("95th"))
-        if None in (p5, p25, p50, p75, p95):
+        pid = card["product_id"]
+        r = requests.get(f"http://127.0.0.1:8402/api/v1/forecast/{pid}", timeout=20)
+        d = r.json()
+        if not isinstance(d, dict) or d.get("point") is None or d.get("low90") is None:
             return None
-
-        # Probability of gain from the calibrated CDF
-        xs = np.array([p5, p25, p50, p75, p95]); ys = np.array([0.05, 0.25, 0.5, 0.75, 0.95])
-        prob_up = round(float((1 - np.interp(price, xs, ys)) * 100), 0)
+        regime = d.get("regime", "global")
+        p50 = d["point"]; p5 = d["low90"]; p95 = d["high90"]
+        half50 = d.get("band50_pct", 0.0) / 100.0 * price
+        p25 = max(0.0, p50 - half50); p75 = p50 + half50
+        calibrated = True
+        prob_up = round(float(d.get("prob_up", 0.5)) * 100)      # 0..1 -> 0..100
+        safe_g = d.get("safe_hold", "?")
+        mom_g = "N/A" if d.get("drift_spike") or d.get("momentum") == "NA" else d.get("momentum", "?")
+        # drift mu implied by the 30d point (for the per-step chart bands)
+        mu = math.log(p50 / price) * 365.0 / 30.0 if price > 0 and p50 > 0 else 0.0
 
         # Per-step bands for the chart, from this regime's conformal offsets
         days = 30
@@ -190,21 +188,13 @@ def fetch_simulate():
         except Exception as e:
             print(f"[!] per-step bands skipped: {e}")
 
-        # letter grades (validated cut-points; N/A on a drift spike)
-        import sys as _gs
-        _gs.path.insert(0, str(SCRIPT_DIR / "scripts"))
-        from card_grades import safe_hold_grade, momentum_grade
-        emove = (p50 / price - 1) * 100
-        safe_g = safe_hold_grade(rm.get("VaR_95_pct", 0.0), rm.get("CVaR_95_pct", 0.0))
-        mom_g = "N/A" if mp.get("drift_spike") else momentum_grade(emove, prob_up / 100.0)
-
         return {
-            "type": "simulate", "card_name": name, "product_id": card["product_id"],
+            "type": "simulate", "card_name": name, "product_id": pid,
             "current_price": price,
             "p5": p5, "p25": p25, "p50": p50, "p75": p75, "p95": p95,
             "regime": regime, "calibrated": calibrated,
             "volatility": round(vol * 100, 1),
-            "var95_pct": rm.get("VaR_95_pct"),
+            "var95_pct": d.get("var95_pct"),
             "upside_prob": prob_up, "bands": bands,
             "safe_grade": safe_g, "momentum_grade": mom_g,
         }
