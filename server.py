@@ -983,7 +983,7 @@ async def card_page(product_id: int):
     row = pr = None
     if db:
         try:
-            row = db.execute("SELECT name, category_id FROM cards WHERE product_id=?", [product_id]).fetchone()
+            row = db.execute("SELECT name, category_id, image_url FROM cards WHERE product_id=?", [product_id]).fetchone()
             if row:
                 pr = db.execute("SELECT market_price, date FROM price_history WHERE product_id=? "
                                 "AND market_price>0 ORDER BY date DESC LIMIT 1", [product_id]).fetchone()
@@ -994,7 +994,8 @@ async def card_page(product_id: int):
                             f"text-align:center;padding:80px'><h2>Card #{product_id} not found</h2>"
                             f"<a style='color:#58a6ff' href='https://oracle.the-undesirables.com'>← oracle</a>"
                             f"</body></html>", status_code=404)
-    name = row[0]; cat = row[1]; price = float(pr[0]); asof = pr[1]
+    name = row[0]; cat = row[1]; stored_img = row[2] if len(row) > 2 else None
+    price = float(pr[0]); asof = pr[1]
     fc = _conformal_forecast(name, price, 30)
     fp = fc["forecast_percentiles"]; rm = fc["risk_metrics"]
     regime = fc["model_params"].get("regime", "global")
@@ -1025,8 +1026,9 @@ async def card_page(product_id: int):
                 else "#8b949e" if g == "N/A" else "#f85149")
     enc = name.replace(" ", "%20").replace("&", "%26")
     api = f"https://oracle.the-undesirables.com/api/v1/simulate?card_name={enc}&current_price={price}&days=30&model=conformal"
-    img_sm = f"https://product-images.tcgplayer.com/fit-in/437x437/{product_id}.jpg"
-    img_lg = f"https://tcgplayer-cdn.tcgplayer.com/product/{product_id}_in_1000x1000.jpg"
+    # stored image_url wins (e.g. Vibes uses DYLI/OCG S3 art, not the TCGplayer CDN)
+    img_sm = stored_img or f"https://product-images.tcgplayer.com/fit-in/437x437/{product_id}.jpg"
+    img_lg = stored_img or f"https://tcgplayer-cdn.tcgplayer.com/product/{product_id}_in_1000x1000.jpg"
     title = f"{name} — {game} Risk Forecast"
     desc = f"30-day conformal forecast: 90% range ${p5:.2f}-${p95:.2f}; 5% chance below ${p5:.2f}. Calibrated, honest VaR."
     html = (f"<!doctype html><html><head><meta charset=utf-8>"
@@ -2975,7 +2977,7 @@ def _recover_spike(ds_val, off_val):
 
 
 def _agent_obj(name, product_id, game, price, as_of, regime, point, low90, high90, p75,
-               var95_pct, var99_pct, prob_up, spike, safe, mom):
+               var95_pct, var99_pct, prob_up, spike, safe, mom, image=None):
     """Agent-COMPLETE forecast object: every number an agent needs to reason, plus
     a one-line plain-English read and the image/permalink URLs."""
     price = float(price)
@@ -2993,7 +2995,7 @@ def _agent_obj(name, product_id, game, price, as_of, regime, point, low90, high9
         "var95_pct": var95_pct, "var99_pct": var99_pct,
         "low90": round(low90, 2), "high90": round(high90, 2),
         "safe_hold": safe, "momentum": mom, "drift_spike": bool(spike),
-        "image_url": f"https://product-images.tcgplayer.com/fit-in/437x437/{product_id}.jpg",
+        "image_url": image or f"https://product-images.tcgplayer.com/fit-in/437x437/{product_id}.jpg",
         "card_url": f"https://oracle.the-undesirables.com/card/{product_id}",
         "plain_english": plain,
     }
@@ -3058,7 +3060,7 @@ async def forecast_card(product_id: int):
     row = pr = None
     if db:
         try:
-            row = db.execute("SELECT name, category_id FROM cards WHERE product_id=?", [product_id]).fetchone()
+            row = db.execute("SELECT name, category_id, image_url FROM cards WHERE product_id=?", [product_id]).fetchone()
             if row:
                 pr = db.execute("SELECT market_price, date FROM price_history WHERE product_id=? "
                                 "AND market_price>0 ORDER BY date DESC LIMIT 1", [product_id]).fetchone()
@@ -3066,14 +3068,15 @@ async def forecast_card(product_id: int):
             db.close()
     if not row or not pr:
         return JSONResponse(status_code=404, content={"status": "not_found", "product_id": product_id})
-    name = row[0]; game = _CARD_GAMES.get(row[1], "TCG"); price = float(pr[0]); as_of = pr[1]
+    name = row[0]; game = _CARD_GAMES.get(row[1], "TCG"); stored_img = row[2] if len(row) > 2 else None
+    price = float(pr[0]); as_of = pr[1]
     fc = _conformal_forecast(name, price, 30)
     fp = fc["forecast_percentiles"]; rm = fc["risk_metrics"]; g = fc["grades"]
     return _agent_obj(name, product_id, game, price, as_of,
                       fc["model_params"].get("regime", "global"),
                       fp["50th"], fp["5th"], fp["95th"], fp["75th"],
                       rm.get("VaR_95_pct"), rm.get("CVaR_95_pct"), g["prob_up"],
-                      g["drift_spike"], g["safe_hold"], g["momentum"])
+                      g["drift_spike"], g["safe_hold"], g["momentum"], image=stored_img)
 
 
 @app.get("/api/v1/simulate", tags=["Paid — $0.015"])
