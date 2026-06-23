@@ -33,7 +33,7 @@ GAME = {
     1: "Magic", 2: "Yu-Gi-Oh!", 3: "Pokémon", 85: "Pokémon (JP)",
     62: "Flesh and Blood", 63: "Digimon", 68: "One Piece",
     79: "Star Wars Unlimited", 80: "Dragon Ball Super", 81: "Union Arena",
-    71: "Lorcana", 86: "Gundam", 89: "Riftbound", 87: "Universus",
+    71: "Lorcana", 86: "Gundam", 89: "Riftbound", 87: "Universus", 9001: "Vibes TCG",
 }
 
 
