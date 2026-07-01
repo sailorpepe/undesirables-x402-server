@@ -6,7 +6,7 @@ An x402 micropayment-gated API providing **financial intelligence for the $50B+ 
 
 # ⚡ TCG Oracle — AI Card Grading & Market Data
 
-**28 paid AI endpoints · USDC micropayments on Base · Conformal-calibrated risk forecasts · AI card grading**
+**28 AI endpoints (15 paid via x402) · USDC micropayments on Base · Conformal-calibrated risk forecasts · AI card grading**
 
 ![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white)
 ![License: BSL-1.1](https://img.shields.io/badge/License-BSL_1.1-red?style=flat-square)
@@ -126,7 +126,7 @@ The server automatically registers its JSON schemas with the Coinbase CDP Facili
 
 | Endpoint | What It Does |
 |----------|-------------|
-| `GET /api/v1/search` | Search 370K+ TCG products across 25 games |
+| `GET /api/v1/search` | Search 442K+ TCG products across 13 games |
 | `GET /api/v1/market` | Daily market snapshot with top movers |
 | `POST /api/v1/recommend` | **Self-navigating API advisor** — describe your goal, get a workflow |
 | `GET /api/v1/accuracy` | Public prediction accuracy dashboard (MAE, hit rates) |
