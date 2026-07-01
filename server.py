@@ -18,6 +18,7 @@ Then expose via Cloudflare Tunnel:
 
 import os
 import json
+import asyncio
 import subprocess
 import sys
 import re
@@ -94,6 +95,46 @@ def _get_db():
     return sqlite3.connect(f"file:{TCGCSV_DB}?mode=ro", uri=True)
 
 
+# ── Grading bridge: run the MCP server's REAL 3-stage pipeline (Qwen VL vision +
+# OpenCV centering + BGS capping) in a subprocess under the MCP package's own
+# python (the x402 venv lacks fastmcp). Result JSON is written to a temp file so
+# the MCP module's startup logging can't pollute the payload. ──
+_MCP_DIR = os.path.expanduser("~/Documents/undesirables-mcp-server")
+_MCP_PY = "/opt/homebrew/opt/python@3.14/bin/python3.14"
+_GRADE_RUNNER = (
+    "import sys, os, json, warnings; warnings.filterwarnings('ignore')\n"
+    "os.chdir(sys.argv[1]); sys.path.insert(0, sys.argv[1])\n"
+    "from server import grade_tcg_card\n"
+    "out = grade_tcg_card(sys.argv[3], sys.argv[4])\n"
+    "open(sys.argv[2], 'w').write(out)\n"
+)
+
+
+def _grade_via_mcp(arguments: dict) -> dict:
+    import tempfile
+    image = arguments.get("image_path") or arguments.get("image_url") or ""
+    card_name = arguments.get("card_name") or arguments.get("game") or "Unknown Card"
+    if not image:
+        return {"error": "image_path required"}
+    with tempfile.NamedTemporaryFile(mode="r", suffix=".json", delete=False) as tf:
+        out_path = tf.name
+    try:
+        proc = subprocess.run(
+            [_MCP_PY, "-c", _GRADE_RUNNER, _MCP_DIR, out_path,
+             json.dumps([image]), card_name],
+            capture_output=True, timeout=150)
+        if proc.returncode != 0:
+            return {"error": f"grading pipeline exited {proc.returncode}: {proc.stderr.decode()[-200:]}"}
+        return json.loads(open(out_path).read())
+    except subprocess.TimeoutExpired:
+        return {"error": "grading pipeline timed out (150s) — vision model busy, retry shortly"}
+    except Exception as e:
+        return {"error": f"grading bridge failure: {e}"}
+    finally:
+        try: os.unlink(out_path)
+        except OSError: pass
+
+
 def call_mcp_tool(tool_name: str, arguments: dict) -> dict:
     """
     Direct data access for TCG tools.
@@ -104,7 +145,9 @@ def call_mcp_tool(tool_name: str, arguments: dict) -> dict:
             return _search_tcg(arguments)
         elif tool_name == "get_market_snapshot":
             return _market_snapshot(arguments)
-        elif tool_name in ("grade_card", "monte_carlo_simulation"):
+        elif tool_name == "grade_card":
+            return _grade_via_mcp(arguments)
+        elif tool_name == "monte_carlo_simulation":
             return {"error": f"Tool '{tool_name}' requires the full MCP server. Use the MCP protocol directly."}
         else:
             return {"error": f"Unknown tool: {tool_name}"}
@@ -617,32 +660,6 @@ try:
                 )
             )
         },
-        "GET /api/v1/arb-grade": {
-            "description": "Raw Card Arbitrage Scanner: scans the TCG database for undervalued raw cards where grading would produce ROI above a threshold. Estimates PSA grades based on price tier and rarity, calculates expected graded values, and returns ranked opportunities sorted by expected profit.",
-            "mimeType": "application/json",
-            "accepts": {
-                "scheme": "exact",
-                "payTo": PAYMENT_ADDRESS,
-                "price": "$0.15",
-                "network": NETWORK,
-            },
-            "extensions": declare_discovery_extension(
-                input={"game": "Pokemon", "min_roi": 50.0},
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "game": {"type": "string", "description": "TCG game to scan (e.g. Pokemon, Magic)"},
-                        "min_raw_price": {"type": "number", "description": "Minimum raw price to consider"},
-                        "max_raw_price": {"type": "number", "description": "Maximum raw price to consider"},
-                        "min_roi": {"type": "number", "description": "Minimum expected ROI % to flag"},
-                    }
-                },
-                output=OutputConfig(
-                    example={"status": "ok", "tool": "arb_grade_scanner", "data": {"opportunities_found": 12}},
-                    schema={"type": "object", "properties": {"status": {"type": "string"}, "data": {"type": "object"}}, "required": ["status"]}
-                )
-            )
-        },
         "GET /api/v1/trending": {
             "description": "Trending Cards Feed: returns the top trading cards by market activity (30-day sales volume, views, price velocity). Covers all 25 supported TCG games. Useful for autonomous buy/sell agents tracking market momentum and identifying emerging opportunities.",
             "mimeType": "application/json",
@@ -670,10 +687,14 @@ try:
         },
         "POST /api/v1/batch-triage": {
             "description": "Batch Card Triage: upload multiple card image URLs and get a profit-ranked grading triage. Each card is graded by AI, then scored by expected ROI from professional grading. Returns a ranked list sorted by highest expected profit first. Perfect for dealers and agents evaluating collections.",
-            "price": {
-                "amount": "500000",
-                "currency": USDC_ADDRESS,
-                "receiver": PAYMENT_ADDRESS,
+            "mimeType": "application/json",
+            # standard exact-scheme shape (the old raw {amount,currency,receiver} dict
+            # produced payment requirements no x402 client could match -> unpayable)
+            "accepts": {
+                "scheme": "exact",
+                "payTo": PAYMENT_ADDRESS,
+                "price": "$0.50",
+                "network": NETWORK,
             },
             "extensions": declare_discovery_extension(
                 input={"image_urls": "https://img1.com/card.jpg,https://img2.com/card.jpg", "game": "Pokemon"},
@@ -783,8 +804,6 @@ try:
                 price, tool = "$0.10", "AI Card Grading"
             elif "trending" in path:
                 price, tool = "$0.025", "Trending Cards Feed"
-            elif "arb-grade" in path:
-                price, tool = "$0.15", "Raw Card Arbitrage Scanner"
             elif "arb-cross" in path:
                 price, tool = "$1.00", "Cross-Platform Arbitrage Scanner"
             elif "arb-basket" in path:
@@ -864,10 +883,10 @@ async def root():
     """Server info and available endpoints."""
     return {
         "name": "TCG Oracle — Financial Intelligence for Collectibles",
-        "tagline": "Conformal risk forecasts, AI grading, and Safe-Hold/Momentum card grades for 370K+ trading cards across 25 games",
+        "tagline": "Conformal risk forecasts, AI grading, and Safe-Hold/Momentum card grades for 442K+ trading cards across 25+ games",
         "version": "2.0.0",
         "x402_enabled": X402_ENABLED,
-        "total_endpoints": 28,
+        "total_endpoints": 27,
         "payment_address": PAYMENT_ADDRESS,
         "network": NETWORK,
         "endpoints": {
@@ -886,10 +905,9 @@ async def root():
             "paid": [
                 {"path": "/api/v1/grade", "price": "$0.10", "description": "3-stage AI card grading (Vision + OpenCV + BGS capping) with ROI verdict"},
                 {"path": "/api/v1/grade-or-not", "price": "$0.10", "description": "Grade-or-Not ROI engine — should I grade this card?"},
-                {"path": "/api/v1/simulate", "price": "$0.015", "description": "Monte Carlo price forecasting (Merton Jump-Diffusion)"},
+                {"path": "/api/v1/simulate", "price": "$0.015", "description": "conformal risk forecasting (Merton Jump-Diffusion)"},
                 {"path": "/api/v1/trending", "price": "$0.025", "description": "Top movers by sales volume and price velocity"},
                 {"path": "/api/v1/market", "price": "$0.025", "description": "Daily market snapshot with top movers"},
-                {"path": "/api/v1/arb-grade", "price": "$0.15", "description": "Raw card arbitrage scanner — finds grading ROI opportunities"},
                 {"path": "/api/v1/batch-triage", "price": "$0.50", "method": "POST", "description": "Grade up to 20 cards, ranked by expected profit"},
                 {"path": "/api/v1/portfolio-optimize", "price": "$0.50", "description": "Markowitz portfolio optimization with Merton Jump-Diffusion"},
                 {"path": "/api/v1/crypto-oracle", "price": "$0.05", "description": "NFT floor price oracle + Monte Carlo"},
@@ -1383,9 +1401,9 @@ async def ai_plugin():
         "name_for_model": "tcg_oracle",
         "description_for_human": (
             "Financial intelligence API for trading card collectors. "
-            "AI grading, Monte Carlo price forecasting, ROI analysis, "
+            "AI grading, conformal risk forecasting, ROI analysis, "
             "arbitrage detection, and portfolio optimization across "
-            "370K+ products and 25 card games."
+            "442K+ products and 25+ card games."
         ),
         "description_for_model": (
             "TCG Oracle provides financial intelligence for collectible trading cards. "
@@ -1426,7 +1444,6 @@ async def ai_plugin():
                 "/api/v1/grade-or-not": "$0.10",
                 "/api/v1/simulate": "$0.015",
                 "/api/v1/trending": "$0.025",
-                "/api/v1/arb-grade": "$0.15",
                 "/api/v1/batch-triage": "$0.50",
                 "/api/v1/portfolio-optimize": "$0.50",
                 "/api/v1/crypto-oracle": "$0.05",
@@ -1449,7 +1466,7 @@ async def agent_card():
     return {
         "name": "The Undesirables TCG Oracle",
         "description": (
-            "AI-powered TCG card grading, Monte Carlo price simulation, "
+            "AI-powered TCG card grading, conformal risk forecasting, "
             "and market intelligence. 370K+ products across 25 games. "
             "28 API endpoints. Pay-per-call via x402 USDC on Base."
         ),
@@ -1589,7 +1606,6 @@ WORKFLOW_CATALOG = {
         "name": "Find undervalued cards to grade for profit",
         "triggers": ["arbitrage", "undervalued", "flip", "buy low", "cheap cards", "profit", "find deals"],
         "steps": [
-            {"endpoint": "/api/v1/arb-grade", "price": "$0.15", "purpose": "Scan database for raw cards with high grading ROI"},
             {"endpoint": "/api/v1/trending", "price": "$0.025", "purpose": "Cross-reference with market momentum"},
         ],
         "total_cost": "$0.175",
@@ -1681,7 +1697,6 @@ async def recommend_workflow(
             "suggested_workflows": [
                 {"workflow": "grade_single_card", "start_with": "/api/v1/search", "description": "Grade a card — start by searching for it"},
                 {"workflow": "market_overview", "start_with": "/api/v1/market", "description": "See what's trending in the market"},
-                {"workflow": "find_arbitrage", "start_with": "/api/v1/arb-grade", "description": "Find undervalued cards to flip"},
             ],
             "all_workflows": list(WORKFLOW_CATALOG.keys()),
         }
@@ -2751,7 +2766,7 @@ async def grade_card(
     if image_url.startswith("http") and not _is_safe_url(image_url):
         raise HTTPException(status_code=400, detail="Image URL must resolve to a public IP address")
 
-    result = call_mcp_tool("grade_card", {"image_path": image_url, "game": game})
+    result = await asyncio.to_thread(call_mcp_tool, "grade_card", {"image_path": image_url, "game": game})
 
     if "error" in result:
         raise HTTPException(status_code=500, detail=result["error"])
@@ -3832,7 +3847,36 @@ async def grade_or_not(
             if row:
                 raw_price = float(row[0])
             db.close()
-    
+
+    # Fallback: exact-substring LIKE fails on set-qualified names ("Base Set Charizard
+    # Holo" — card names in the DB don't contain the set). Retry via FTS, dropping
+    # set/finish stopwords, then the longest single token, so agents don't 400.
+    if raw_price <= 0:
+        db = _get_db()
+        if db:
+            try:
+                toks = [t for t in re.sub(r"[^A-Za-z0-9 ]", " ", card_name).split() if len(t) > 1]
+                stop = {"base", "set", "holo", "holofoil", "1st", "edition", "promo", "card", "the"}
+                core = [t for t in toks if t.lower() not in stop]
+                for attempt in (" ".join(toks), " ".join(core),
+                                max(core or toks, key=len, default="")):
+                    if not attempt:
+                        continue
+                    row = db.execute(
+                        "SELECT p.market_price FROM cards_fts f "
+                        "JOIN cards c ON c.rowid = f.rowid "
+                        "JOIN price_history p ON p.product_id = c.product_id "
+                        "  AND p.date = (SELECT MAX(date) FROM price_history) "
+                        "WHERE cards_fts MATCH ? AND p.market_price > 0 "
+                        "ORDER BY p.market_price DESC LIMIT 1", [attempt]).fetchone()
+                    if row:
+                        raw_price = float(row[0])
+                        break
+            except Exception:
+                pass
+            finally:
+                db.close()
+
     if raw_price <= 0:
         raise HTTPException(status_code=400, detail=f"Could not determine raw price for '{card_name}'. Provide raw_price parameter.")
     
@@ -4656,7 +4700,7 @@ async def batch_triage(
 
         try:
             # Grade the card
-            grade_data = call_mcp_tool("grade_card", {"image_path": url, "game": game})
+            grade_data = await asyncio.to_thread(call_mcp_tool, "grade_card", {"image_path": url, "game": game})
 
             if "error" in grade_data:
                 card_result["error"] = grade_data["error"]

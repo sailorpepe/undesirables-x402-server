@@ -73,8 +73,8 @@ async def main():
     # Define all paid endpoints we want on the Bazaar directory
     endpoints = [
         {"name": "AI Card Grading", "cost": "$0.10", "url": "https://oracle.the-undesirables.com/api/v1/grade?image_url=https://example.com/card.png"},
-        {"name": "Crypto Oracle", "cost": "$0.05", "url": "https://oracle.the-undesirables.com/api/v1/crypto-oracle?asset=bitcoin"},
-        {"name": "Coin History Emulator", "cost": "$0.05", "url": "https://oracle.the-undesirables.com/api/v1/coin-history?coin=pepe"},
+        {"name": "Crypto Oracle", "cost": "$0.05", "url": "https://oracle.the-undesirables.com/api/v1/crypto-oracle?contract_address=0xBd3531dA5CF5857e7CfAA92426877b022e612cf8"},
+        {"name": "Coin History Emulator", "cost": "$0.05", "url": "https://oracle.the-undesirables.com/api/v1/coin-history?coin_id=pepe"},
         {"name": "Cross-Platform Arbitrage", "cost": "$1.00", "url": "https://oracle.the-undesirables.com/api/v1/arb-cross"},
         {"name": "Risk-Free Basket Arbitrage", "cost": "$0.50", "url": "https://oracle.the-undesirables.com/api/v1/arb-basket"},
         {"name": "Weather Derivative Arbitrage", "cost": "$0.25", "url": "https://oracle.the-undesirables.com/api/v1/arb-weather"}
