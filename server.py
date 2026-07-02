@@ -3149,8 +3149,16 @@ def soul_rating(request: Request, token_id: int):
                 "methodology_note": _SOULS_METHOD,
                 "verify": ("Fully deterministic: recompute picks() from the archived public "
                            "forecast board (as_of date) + the soul's traits; sha256 the canonical "
-                           "row to reproduce each lock_hash; hashes fold into the week's Merkle "
-                           "root committed before maturity.")}
+                           "row to reproduce each lock_hash. Weekly roots are committed to the "
+                           "SoulPredictionOracle contract on LitVM LiteForge (chain 4441) at "
+                           "0x5503D08D7D167eE23AcE818bff1a00eF77A76dBF BEFORE maturity — "
+                           "immutable per week (no overwrite path); verifyPrediction(weekId, "
+                           "leaf, proof) with OZ sorted-pair convention, leaf = keccak(keccak("
+                           "abi.encode(tokenId, weekId, productId, direction, lockHash))). "
+                           "Week 1 (20260701) provenance: v1 calldata commitment tx 2270231299ed"
+                           "689e35136e82f2295bdeaaec7ca8dc7bbbc3d047b9d9c00f1c50 (sha256-tree "
+                           "root, committed pre-outcome), recommitted on-contract tx 0xbfdf2fc95"
+                           "3548d20a7fd024c14b67aae6cadd4b26618e3dc396246b67c8f355c.")}
     finally:
         db.close()
 

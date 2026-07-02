@@ -77,6 +77,9 @@ def lock_hash(token_id, as_of, product_id, direction, pu, conf, price):
 
 
 def merkle_root(leaves):
+    """LEGACY (week 1 / 2026-07-01 only): plain sha256, sorted hex leaves,
+    duplicate-last-odd. That root is already committed (calldata + contract) —
+    kept only so third parties can recompute week 1."""
     layer = sorted(leaves)
     if not layer:
         return None
@@ -86,6 +89,37 @@ def merkle_root(leaves):
             layer.append(layer[-1])
         layer = [hashlib.sha256(layer[i] + layer[i + 1]).digest() for i in range(0, len(layer), 2)]
     return layer[0].hex()
+
+
+# ── Week 2+ convention: SoulPredictionOracle (0x5503D08D…) verifyPrediction
+# expects the family standard — leaf = keccak(keccak(abi.encode(
+# uint256 tokenId, uint256 weekId, uint256 productId, string direction,
+# bytes32 lockHash))), zero-padded power-of-two tree, sorted-pair keccak nodes
+# (identical to graded_merkle_updater.build_merkle_tree / OZ MerkleProof). ──
+SOUL_ORACLE = "0x5503D08D7D167eE23AcE818bff1a00eF77A76dBF"
+
+
+def oz_leaf(w3, token_id, week_id, product_id, direction, lock_hash_hex):
+    from eth_abi import encode as abi_encode
+    inner = abi_encode(["uint256", "uint256", "uint256", "string", "bytes32"],
+                       [token_id, week_id, product_id, direction, bytes.fromhex(lock_hash_hex)])
+    return w3.keccak(w3.keccak(inner))
+
+
+def oz_merkle_root(w3, leaves):
+    padded = list(leaves)
+    while len(padded) & (len(padded) - 1):
+        padded.append(b"\x00" * 32)
+    if len(padded) < 2:
+        padded.extend([b"\x00" * 32] * (2 - len(padded)))
+    current = padded
+    while len(current) > 1:
+        nxt = []
+        for i in range(0, len(current), 2):
+            left, right = current[i], current[i + 1]
+            nxt.append(w3.keccak((left + right) if left < right else (right + left)))
+        current = nxt
+    return current[0].hex().replace("0x", "")
 
 
 def ensure_schema(db):
@@ -129,8 +163,13 @@ def do_lock():
             if cur.rowcount:
                 n += 1
                 leaves.append(h)
-    root = merkle_root([r[0] for r in db.execute(
-        "SELECT lock_hash FROM soul_predictions WHERE as_of=?", (as_of,))])
+    # week-2+ roots use the contract's OZ convention (verifyPrediction-compatible)
+    from web3 import Web3
+    w3h = Web3()
+    week_id = int(as_of.replace("-", ""))
+    rows_all = db.execute("SELECT token_id, product_id, direction, lock_hash "
+                          "FROM soul_predictions WHERE as_of=?", (as_of,)).fetchall()
+    root = oz_merkle_root(w3h, [oz_leaf(w3h, t, week_id, p, d, h) for t, p, d, h in rows_all])
     db.execute("INSERT OR REPLACE INTO merkle_roots (as_of, root, n_leaves, tx_hash) "
                "VALUES (?,?,?, (SELECT tx_hash FROM merkle_roots WHERE as_of=?))",
                (as_of, root,
@@ -196,11 +235,23 @@ def do_score():
     mkt.close(); db.close()
 
 
+_ORACLE_ABI = [
+    {"name": "commitRoot", "type": "function", "stateMutability": "nonpayable",
+     "inputs": [{"name": "_weekId", "type": "uint256"}, {"name": "_root", "type": "bytes32"},
+                {"name": "_n", "type": "uint32"}], "outputs": []},
+    {"name": "commitments", "type": "function", "stateMutability": "view",
+     "inputs": [{"name": "", "type": "uint256"}],
+     "outputs": [{"name": "root", "type": "bytes32"}, {"name": "nPredictions", "type": "uint32"},
+                 {"name": "timestamp", "type": "uint64"}]},
+]
+
+
 def commit_onchain():
-    """Commit the latest weekly root on LitVM as CALLDATA (0-value self-send whose
-    input data = tag || root). Timestamped + immutable before any prediction can
-    be judged; verify by tx: calldata == b'UNDSR-SOULS-v1' + root bytes. A
-    dedicated SoulPredictionOracle contract can supersede this later."""
+    """Commit the latest weekly root to the SoulPredictionOracle contract on LitVM
+    (immutable per week — no overwrite path). Week 1 (2026-07-01) was v1
+    calldata-committed (tx 2270231…c50) then recommitted on the contract
+    (tx 0xbfdf2fc9…f355c); weeks 2+ land here directly with OZ-convention roots
+    so verifyPrediction() works per-prediction."""
     from web3 import Web3
     from dotenv import load_dotenv
     load_dotenv(os.path.join(REPO, ".env"))
@@ -208,24 +259,30 @@ def commit_onchain():
     if not pk:
         print("[commit] LITVM_TESTNET_PK not set — skipped"); return
     db = sqlite3.connect(DB, timeout=30)
-    row = db.execute("SELECT as_of, root FROM merkle_roots WHERE tx_hash IS NULL "
+    row = db.execute("SELECT as_of, root, n_leaves FROM merkle_roots WHERE tx_hash IS NULL "
                      "ORDER BY as_of DESC LIMIT 1").fetchone()
     if not row:
         print("[commit] no uncommitted root"); db.close(); return
-    as_of, root = row
+    as_of, root, n = row
+    week_id = int(as_of.replace("-", ""))
     w3 = Web3(Web3.HTTPProvider("https://liteforge.rpc.caldera.xyz/http", request_kwargs={"timeout": 60}))
     acct = w3.eth.account.from_key(pk)
-    data = b"UNDSR-SOULS-v1" + bytes.fromhex(root)
-    tx = {"chainId": w3.eth.chain_id, "from": acct.address, "to": acct.address, "value": 0,
-          "nonce": w3.eth.get_transaction_count(acct.address, "pending"),
-          "gas": 60000, "gasPrice": w3.eth.gas_price, "data": data}
+    oracle = w3.eth.contract(address=Web3.to_checksum_address(SOUL_ORACLE), abi=_ORACLE_ABI)
+    if oracle.functions.commitments(week_id).call()[0] != b"\x00" * 32:
+        print(f"[commit] week {week_id} already committed on-contract — marking done")
+        db.execute("UPDATE merkle_roots SET tx_hash='(pre-committed on contract)' WHERE as_of=?", (as_of,))
+        db.commit(); db.close(); return
+    tx = oracle.functions.commitRoot(week_id, bytes.fromhex(root), int(n)).build_transaction({
+        "chainId": w3.eth.chain_id, "from": acct.address,
+        "nonce": w3.eth.get_transaction_count(acct.address, "pending"),
+        "gas": 150000, "gasPrice": w3.eth.gas_price})
     signed = w3.eth.account.sign_transaction(tx, pk)
     raw = getattr(signed, "raw_transaction", None) or signed.rawTransaction
     txh = w3.eth.send_raw_transaction(raw).hex()
     rc = w3.eth.wait_for_transaction_receipt(txh, timeout=120)
     db.execute("UPDATE merkle_roots SET tx_hash=? WHERE as_of=?", (txh, as_of))
     db.commit(); db.close()
-    print(f"[commit] root {root[:16]}… committed on LitVM tx {txh} (status {rc.status})")
+    print(f"[commit] week {week_id} root {root[:16]}… -> SoulPredictionOracle tx {txh} (status {rc.status})")
 
 
 if __name__ == "__main__":
