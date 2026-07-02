@@ -174,13 +174,19 @@ def do_score():
                FROM soul_predictions WHERE scored=1 GROUP BY token_id"""):
         rated = matured - (pushes or 0)
         hr = (hits or 0) / rated if rated else None
-        if rated < 10:
+        # Studio-approved bands (2026-07-02): A+ needs >=.70 AND matured>=20;
+        # 3-9 rated = PROVISIONAL (letter + '*') so the first cohort prints
+        # something on day one; <3 stays UNRATED.
+        if rated < 3 or hr is None:
             rating = "UNRATED"
-        elif hr >= .60: rating = "A"
-        elif hr >= .55: rating = "B"
-        elif hr >= .50: rating = "C"
-        elif hr >= .45: rating = "D"
-        else: rating = "F"
+        else:
+            if hr >= .70 and matured >= 20: letter = "A+"
+            elif hr >= .60: letter = "A"
+            elif hr >= .55: letter = "B"
+            elif hr >= .50: letter = "C"
+            elif hr >= .45: letter = "D"
+            else: letter = "F"
+            rating = letter + ("*" if rated < 10 else "")
         db.execute("INSERT INTO soul_ratings VALUES (?,?,?,?,?,?,?,?)",
                    (tok, matured, hits or 0, pushes or 0,
                     round(hr, 4) if hr is not None else None,
