@@ -16,3 +16,4 @@ forecast_ledger.sqlite-shm
 graded_history.sqlite
 graded_history.sqlite-wal
 graded_history.sqlite-shm
+soul_predictions.sqlite
