@@ -3092,15 +3092,28 @@ def soul_leaderboard(request: Request):
     if not db:
         raise HTTPException(status_code=503, detail="soul ratings not initialized")
     try:
-        rows = db.execute(
-            "SELECT token_id, rating, matured, hits, pushes, hit_rate, brier FROM soul_ratings "
-            "ORDER BY CASE rating WHEN 'A' THEN 0 WHEN 'B' THEN 1 WHEN 'C' THEN 2 WHEN 'D' THEN 3 "
-            "WHEN 'F' THEN 4 ELSE 5 END, hit_rate DESC").fetchall()
+        rows = db.execute("SELECT token_id, rating, matured, hits, pushes, hit_rate, brier "
+                          "FROM soul_ratings").fetchall()
+        def rank(r):    # A+ < A < B < ... ; provisional (*) sorts just below its solid letter
+            base = {"A+": 0, "A": 1, "B": 2, "C": 3, "D": 4, "F": 5}.get(r[1].rstrip("*"), 9)
+            return (base + (0.5 if r[1].endswith("*") else 0), -(r[5] or 0))
+        rated = sorted([r for r in rows if r[1] != "UNRATED"], key=rank)
+        rated_ids = {r[0] for r in rated}
+        # countdown section: every minted soul not yet rated, sorted by open lock
+        # count desc then earliest maturity — "819 locks counting down" IS the content
+        opens = db.execute(
+            "SELECT token_id, COUNT(*), MIN(matures_on) FROM soul_predictions "
+            "WHERE scored=0 GROUP BY token_id").fetchall()
+        counting = sorted([{"token_id": t, "rating": "UNRATED", "open_locks": n, "first_maturity": m}
+                           for t, n, m in opens if t not in rated_ids],
+                          key=lambda x: (-x["open_locks"], x["first_maturity"], x["token_id"]))
         n_open = db.execute("SELECT COUNT(*) FROM soul_predictions WHERE scored=0").fetchone()[0]
         latest = db.execute("SELECT as_of, root, n_leaves, tx_hash FROM merkle_roots ORDER BY as_of DESC LIMIT 1").fetchone()
         return {"status": "ok", "minted_universe": "tokens 1-273", "open_predictions": n_open,
                 "rated": [{"token_id": r[0], "rating": r[1], "matured": r[2], "hits": r[3],
-                           "pushes": r[4], "hit_rate": r[5], "brier": r[6]} for r in rows],
+                           "pushes": r[4], "hit_rate": r[5], "brier": r[6]} for r in rated],
+                "counting_down": counting,
+                "rating_scale": "A+ (>=.70 hit rate, >=20 matured) A B C D F; '*' = provisional (3-9 rated); UNRATED <3",
                 "latest_lock": (latest and {"as_of": latest[0], "merkle_root": latest[1],
                                             "n_predictions": latest[2], "tx": latest[3]}),
                 "methodology_note": _SOULS_METHOD}
