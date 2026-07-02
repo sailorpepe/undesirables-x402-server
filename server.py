@@ -3067,6 +3067,81 @@ async def forecast_board():
     return payload
 
 
+# ── Soul Ratings ("FICO for souls") — public, verifiable prediction track
+# records for the MINTED Undesirables (1-273). Personalities stay holder-gated;
+# only the rating + prediction hashes are public. FREE forever. ──
+_SOULS_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "soul_predictions.sqlite")
+_SOULS_METHOD = ("Each minted soul locks 3 deterministic card predictions weekly, chosen by its "
+                 "on-chain personality traits from the PUBLIC free forecast board "
+                 "(/api/v1/forecast). The oracle scores them 30 days later against real market "
+                 "prices: |move|<1% = push (excluded), else hit/miss. Rating: >=10 rated "
+                 "predictions, hit_rate >=.60 A, >=.55 B, >=.50 C, >=.45 D, else F.")
+
+
+def _souls_db():
+    if not os.path.exists(_SOULS_DB):
+        return None
+    return sqlite3.connect(f"file:{_SOULS_DB}?mode=ro", uri=True)
+
+
+@app.get("/api/v1/soul-rating", tags=["Free"])
+@limiter.limit("60/minute")
+def soul_leaderboard(request: Request):
+    """🆓 FREE — leaderboard of minted-soul prediction track records."""
+    db = _souls_db()
+    if not db:
+        raise HTTPException(status_code=503, detail="soul ratings not initialized")
+    try:
+        rows = db.execute(
+            "SELECT token_id, rating, matured, hits, pushes, hit_rate, brier FROM soul_ratings "
+            "ORDER BY CASE rating WHEN 'A' THEN 0 WHEN 'B' THEN 1 WHEN 'C' THEN 2 WHEN 'D' THEN 3 "
+            "WHEN 'F' THEN 4 ELSE 5 END, hit_rate DESC").fetchall()
+        n_open = db.execute("SELECT COUNT(*) FROM soul_predictions WHERE scored=0").fetchone()[0]
+        latest = db.execute("SELECT as_of, root, n_leaves, tx_hash FROM merkle_roots ORDER BY as_of DESC LIMIT 1").fetchone()
+        return {"status": "ok", "minted_universe": "tokens 1-273", "open_predictions": n_open,
+                "rated": [{"token_id": r[0], "rating": r[1], "matured": r[2], "hits": r[3],
+                           "pushes": r[4], "hit_rate": r[5], "brier": r[6]} for r in rows],
+                "latest_lock": (latest and {"as_of": latest[0], "merkle_root": latest[1],
+                                            "n_predictions": latest[2], "tx": latest[3]}),
+                "methodology_note": _SOULS_METHOD}
+    finally:
+        db.close()
+
+
+@app.get("/api/v1/soul-rating/{token_id}", tags=["Free"])
+@limiter.limit("60/minute")
+def soul_rating(request: Request, token_id: int):
+    """🆓 FREE — one soul's public prediction track record + open (locked) predictions."""
+    if not 1 <= token_id <= 273:
+        raise HTTPException(status_code=404, detail="only minted souls (1-273) have public ratings")
+    db = _souls_db()
+    if not db:
+        raise HTTPException(status_code=503, detail="soul ratings not initialized")
+    try:
+        agg = db.execute("SELECT matured, hits, pushes, hit_rate, brier, rating FROM soul_ratings "
+                         "WHERE token_id=?", (token_id,)).fetchone()
+        opens = db.execute(
+            "SELECT product_id, name, direction, as_of, matures_on, lock_hash FROM soul_predictions "
+            "WHERE token_id=? AND scored=0 ORDER BY as_of DESC, product_id", (token_id,)).fetchall()
+        roots = {r[0]: {"merkle_root": r[1], "tx": r[3]} for r in
+                 db.execute("SELECT as_of, root, n_leaves, tx_hash FROM merkle_roots")}
+        return {"status": "ok", "token_id": token_id,
+                "rating": agg[5] if agg else "UNRATED",
+                "matured": agg[0] if agg else 0, "hits": agg[1] if agg else 0,
+                "pushes": agg[2] if agg else 0, "hit_rate": agg[3] if agg else None,
+                "brier": agg[4] if agg else None,
+                "open_predictions": [{"product_id": o[0], "name": o[1], "direction": o[2],
+                                      "as_of": o[3], "matures_on": o[4], "lock_hash": o[5],
+                                      "week_commitment": roots.get(o[3])} for o in opens],
+                "methodology_note": _SOULS_METHOD,
+                "verify": ("Fully deterministic: recompute picks() from the archived public "
+                           "forecast board (as_of date) + the soul's traits; sha256 the canonical "
+                           "row to reproduce each lock_hash; hashes fold into the week's Merkle "
+                           "root committed before maturity.")}
+    finally:
+        db.close()
+
+
 @app.get("/api/v1/forecast/{product_id}", tags=["Free"])
 async def forecast_card(product_id: int):
     """FREE per-card conformal 30-day forecast + Safe-Hold/Momentum grades as
