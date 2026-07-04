@@ -412,6 +412,9 @@ async def _request_logger(request, call_next):
 # x402 Middleware — Route-based payment gating
 # ---------------------------------------------------------------------------
 X402_ENABLED = False
+# Single source of truth for the /.well-known/x402 discovery manifest: populated
+# from x402_routes below so the manifest can never drift from the live 402s.
+_X402_MANIFEST_ROUTES = {}
 try:
     from x402.http.middleware.fastapi import payment_middleware
     from x402 import x402ResourceServer
@@ -762,6 +765,9 @@ try:
             )
         },
     }
+
+    # expose the route table for the /.well-known/x402 manifest generator
+    _X402_MANIFEST_ROUTES.update(x402_routes)
 
     # Build facilitator client — CDP auth for mainnet, plain for testnet
     CDP_KEY_ID = os.getenv("CDP_API_KEY_ID")
@@ -1421,6 +1427,68 @@ async def casper_price_search(
 # ---------------------------------------------------------------------------
 # Agent Discovery — .well-known endpoints
 # ---------------------------------------------------------------------------
+def _price_to_atomic(price_str: str) -> str:
+    """'$0.10' -> '100000' (USDC has 6 decimals)."""
+    try:
+        return str(int(round(float(str(price_str).replace("$", "").strip()) * 1_000_000)))
+    except (ValueError, TypeError):
+        return "0"
+
+
+def _build_x402_manifest() -> dict:
+    """Standard x402 discovery manifest, generated FROM x402_routes so it can
+    never drift from the live 402 challenges. Mirrors the CDP Bazaar resource-
+    object shape (resource/type/accepts/description/extensions) that the broader
+    x402 crawler ecosystem (agent runtimes, x402station, flows, etc.) parses.
+    NOTE: the CDP Bazaar merchant index itself is populated by settled-payment
+    handshakes, NOT by this manifest — this serves the non-CDP ecosystem that
+    was hitting /.well-known/x402 and getting 404."""
+    base = "https://oracle.the-undesirables.com"
+    resources = []
+    for route_key, cfg in _X402_MANIFEST_ROUTES.items():
+        parts = route_key.split(" ", 1)
+        method, path = (parts[0], parts[1]) if len(parts) == 2 else ("GET", parts[0])
+        accepts_cfg = cfg.get("accepts", {})
+        atomic = _price_to_atomic(accepts_cfg.get("price", "0"))
+        entry = {
+            "resource": base + path,
+            "type": "http",
+            "x402Version": 2,
+            "description": cfg.get("description", ""),
+            "mimeType": cfg.get("mimeType", "application/json"),
+            "method": method,
+            "accepts": [{
+                "scheme": accepts_cfg.get("scheme", "exact"),
+                "network": accepts_cfg.get("network", NETWORK),
+                # emit both keys for max crawler compatibility (CDP uses `amount`,
+                # the x402 PaymentRequirements spec uses `maxAmountRequired`)
+                "amount": atomic,
+                "maxAmountRequired": atomic,
+                "asset": USDC_ADDRESS,
+                "payTo": accepts_cfg.get("payTo", PAYMENT_ADDRESS),
+                "maxTimeoutSeconds": 300,
+                "extra": {"name": "USD Coin", "version": "2"},
+            }],
+        }
+        if cfg.get("extensions"):
+            entry["extensions"] = cfg["extensions"]
+        resources.append(entry)
+    return {"x402Version": 2, "resources": resources}
+
+
+@app.get("/.well-known/x402", tags=["Discovery"])
+@app.get("/.well-known/x402.json", tags=["Discovery"])
+async def x402_discovery_manifest():
+    """🆓 x402 discovery manifest — enumerates every payable resource (price,
+    USDC asset, network, payTo, input/output schema) for crawlers + payment-aware
+    agents. Generated from the live route table (single source of truth)."""
+    from fastapi.responses import JSONResponse
+    return JSONResponse(
+        _build_x402_manifest(),
+        headers={"Cache-Control": "public, max-age=3600"},
+    )
+
+
 @app.get("/.well-known/ai-plugin.json", tags=["Discovery"])
 async def ai_plugin():
     """Bitte Protocol / OpenAI plugin manifest for agent discovery."""
