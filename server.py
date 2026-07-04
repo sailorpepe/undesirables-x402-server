@@ -721,6 +721,21 @@ try:
                 "price": "$0.10",
                 "network": NETWORK,
             },
+            "extensions": declare_discovery_extension(
+                input={},
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "game": {"type": "string", "description": "Optional TCG filter (default: all)"},
+                        "min_edge": {"type": "number", "description": "Minimum arbitrage edge %% to return"}
+                    },
+                    "required": []
+                },
+                output=OutputConfig(
+                    example={"status": "ok", "tool": "phygital_arbitrage", "data": {"signals": [{"card": "Charizard", "signal": "BUY", "edge_pct": 6.8}]}},
+                    schema={"type": "object", "properties": {"status": {"type": "string"}, "tool": {"type": "string"}, "data": {"type": "object"}}, "required": ["status"]}
+                )
+            )
         },
         "GET /api/v1/market": {
             "description": "Daily TCGCSV market data snapshot with top movers, price changes, and volume trends across all 13 supported TCG games.",
@@ -731,6 +746,20 @@ try:
                 "price": "$0.025",
                 "network": NETWORK,
             },
+            "extensions": declare_discovery_extension(
+                input={},
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "game": {"type": "string", "description": "Optional TCG filter, e.g. 'Pokemon' (default: all games)"}
+                    },
+                    "required": []
+                },
+                output=OutputConfig(
+                    example={"status": "ok", "tool": "market_snapshot", "data": {"date": "2026-07-04", "top_movers": [{"name": "Charizard", "change_pct": 8.2}]}},
+                    schema={"type": "object", "properties": {"status": {"type": "string"}, "tool": {"type": "string"}, "data": {"type": "object"}}, "required": ["status"]}
+                )
+            )
         },
     }
 
