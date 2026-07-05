@@ -715,6 +715,31 @@ try:
                 )
             )
         },
+        "GET /api/v1/batch-triage": {
+            "description": "Batch Card Triage (GET variant): pass comma-separated card image URLs as the image_urls query param and get a profit-ranked grading triage. Each card is AI-graded then scored by expected ROI from professional grading, ranked highest-profit first. Identical to the POST endpoint — this GET form exists so the CDP Bazaar can index it.",
+            "mimeType": "application/json",
+            "accepts": {
+                "scheme": "exact",
+                "payTo": PAYMENT_ADDRESS,
+                "price": "$0.50",
+                "network": NETWORK,
+            },
+            "extensions": declare_discovery_extension(
+                input={"image_urls": "https://img1.com/card.jpg,https://img2.com/card.jpg", "game": "Pokemon"},
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "image_urls": {"type": "string", "description": "Comma-separated card image URLs (max 20)"},
+                        "game": {"type": "string", "description": "TCG game for grading context (default: Pokemon)"},
+                    },
+                    "required": ["image_urls"]
+                },
+                output=OutputConfig(
+                    example={"status": "ok", "tool": "batch_triage", "data": {"total_cards": 5, "total_expected_profit_usd": 125.00, "ranked": []}},
+                    schema={"type": "object", "properties": {"status": {"type": "string"}, "data": {"type": "object"}}, "required": ["status"]}
+                )
+            )
+        },
         "GET /api/v1/phygital/arbitrage": {
             "description": "Phygital Arbitrage Screener: cross-references Courtyard.io tokenized card listings against TCGPlayer raw prices to find BUY/SELL signals. Covers 267K+ vaulted, insured, tradeable cards on Polygon.",
             "mimeType": "application/json",
@@ -4850,21 +4875,11 @@ def wallet_portfolio(
 # ---------------------------------------------------------------------------
 # BATCH TRIAGE — Grade + ROI rank multiple cards at once
 # ---------------------------------------------------------------------------
-@app.post("/api/v1/batch-triage", tags=["Paid — $0.50"])
-async def batch_triage(
-    image_urls: str = Body(..., description="Comma-separated card image URLs (max 20)"),
-    game: str = Body("Pokemon", description="TCG game for grading context"),
-):
-    """
-    💰 **$0.50 USDC** — Batch Card Triage.
-
-    Upload up to 20 card image URLs → each card gets AI graded and scored
-    by expected grading ROI → returns a profit-ranked list (best first).
-
-    Perfect for dealers evaluating a collection, or agents triaging inventory.
-
-    Returns `402 Payment Required` — sign USDC payment on Base to access.
-    """
+async def _batch_triage_impl(image_urls: str, game: str):
+    """Shared batch-triage core — reachable via POST (JSON body) or GET (query
+    params). The GET variant exists so the CDP Bazaar can index this resource:
+    CDP does not index POST-only endpoints (x402 issue #2112). Both are the
+    same $0.50 tool and run identical logic."""
     urls = [u.strip() for u in image_urls.split(",") if u.strip()]
 
     if len(urls) == 0:
@@ -4994,6 +5009,27 @@ async def batch_triage(
             ),
         },
     }
+
+
+@app.post("/api/v1/batch-triage", tags=["Paid — $0.50"])
+async def batch_triage_post(
+    image_urls: str = Body(..., description="Comma-separated card image URLs (max 20)"),
+    game: str = Body("Pokemon", description="TCG game for grading context"),
+):
+    """💰 **$0.50 USDC** — Batch Card Triage (POST + JSON body). Up to 20 card
+    image URLs → each AI-graded and ROI-ranked, best profit first."""
+    return await _batch_triage_impl(image_urls, game)
+
+
+@app.get("/api/v1/batch-triage", tags=["Paid — $0.50"])
+async def batch_triage_get(
+    image_urls: str = Query(..., description="Comma-separated card image URLs (max 20)"),
+    game: str = Query("Pokemon", description="TCG game for grading context"),
+):
+    """💰 **$0.50 USDC** — Batch Card Triage (GET variant; query params).
+    Functionally identical to the POST endpoint; exists so the CDP Bazaar can
+    index this tool (CDP does not index POST-only resources)."""
+    return await _batch_triage_impl(image_urls, game)
 
 
 # ---------------------------------------------------------------------------
