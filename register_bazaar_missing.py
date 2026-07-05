@@ -36,8 +36,10 @@ IMG = "https://product-images.tcgplayer.com/fit-in/437x437/84198.jpg"
 # list already-indexed ones too, but we scope to exactly the gap.
 TARGETS = [
     {"name": "Daily Market Snapshot", "path": "/api/v1/market", "method": "GET", "body": None},
-    {"name": "Batch Card Triage", "path": "/api/v1/batch-triage", "method": "POST",
-     "body": {"image_urls": IMG, "game": "Pokemon"}},
+    # batch-triage: register the GET variant — CDP does not index POST-only
+    # resources (issue #2112), and the GET form is functionally identical.
+    {"name": "Batch Card Triage", "path": "/api/v1/batch-triage", "method": "GET",
+     "query": f"image_urls={IMG}&game=Pokemon", "body": None},
 ]
 
 
@@ -53,7 +55,7 @@ def indexed_paths():
 
 
 async def register(http, client, t):
-    url = BASE + t["path"]
+    url = BASE + t["path"] + (("?" + t["query"]) if t.get("query") else "")
     kw = {"headers": {"user-agent": "httpx"}}
     if t["method"] == "POST":
         kw["json"] = t["body"]
