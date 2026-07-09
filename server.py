@@ -881,7 +881,7 @@ try:
             elif "coin-history" in path:
                 price, tool = "$0.05", "Historical Token Simulator"
             else:
-                price, tool = "$0.015", "Monte Carlo Simulation"
+                price, tool = "$0.015", "Conformal Price Forecast"
 
             # Build a free preview from the query params
             preview = None
