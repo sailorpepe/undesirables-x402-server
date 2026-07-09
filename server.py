@@ -349,7 +349,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="The Undesirables — AI Tools API",
     description=(
-        "TCG card grading, Monte Carlo simulation, and market intelligence. "
+        "TCG card grading, conformal risk forecasting, and market intelligence. "
         "Powered by x402 micropayments in USDC on Base. "
         "Free tools require no payment. Paid tools return HTTP 402 — "
         "sign a USDC payment and retry with the payment proof header."
@@ -459,7 +459,7 @@ try:
             )
         },
         "GET /api/v1/simulate": {
-            "description": "Predict the future market value of any collectible trading card using stochastic finance Monte Carlo simulations. Supports GBM and Merton Jump-Diffusion stochastic models with Poisson-driven jumps. Returns full forecast percentiles (5th through 95th), model parameters, VaR/CVaR risk metrics, and confidence intervals. Covers Pokémon, Magic, Yu-Gi-Oh, sports cards, and any tokenized real-world asset.",
+            "description": "Predict the future market value of any collectible trading card with a conformal-calibrated risk forecast (default): regime-aware split-conformal bands fit on real holdout residuals, returning calibrated forecast percentiles (5th–95th), honest VaR/CVaR, and Safe-Hold/Momentum letter grades. Monte Carlo models (GBM / Merton Jump-Diffusion with Poisson jumps) are available opt-in via model=. Covers Pokémon, Magic, Yu-Gi-Oh, sports cards, and any tokenized real-world asset.",
             "mimeType": "application/json",
             "accepts": {
                 "scheme": "exact",
@@ -494,7 +494,7 @@ try:
             )
         },
         "GET /api/v1/crypto-oracle": {
-            "description": "Fetch real-time NFT collection floor prices via Alchemy and run Merton Jump-Diffusion Monte Carlo simulations for institutional-grade price forecasting. Supports any ERC-721 or ERC-1155 contract on Ethereum mainnet. Returns current floor, historical volatility, drift parameters, and forecast percentiles.",
+            "description": "NFT collection floor-price oracle: fetches real-time floors via Alchemy and returns risk-aware price forecasts — current floor, historical volatility, drift, and forecast percentiles. Forecasting uses Merton Jump-Diffusion modeling for this crypto-native asset class. Supports any ERC-721 or ERC-1155 contract on Ethereum mainnet.",
             "mimeType": "application/json",
             "accepts": {
                 "scheme": "exact",
@@ -520,7 +520,7 @@ try:
             )
         },
         "GET /api/v1/coin-history": {
-            "description": "Historical Token Simulator: Fetches OHLC (Open, High, Low, Close) token data from CoinGecko and applies Merton Jump-Diffusion Monte Carlo simulation to project future trajectories.",
+            "description": "Historical token price forecaster: fetches OHLC (Open, High, Low, Close) data from CoinGecko and projects forward trajectories with percentile forecasts. Uses Merton Jump-Diffusion modeling for this crypto-native asset class.",
             "mimeType": "application/json",
             "accepts": {
                 "scheme": "exact",
@@ -610,7 +610,7 @@ try:
             )
         },
         "GET /api/v1/portfolio-optimize": {
-            "description": "Optimize a trading card portfolio using Markowitz mean-variance analysis with Merton Jump-Diffusion Monte Carlo simulations. Provide a list of card names, budget, and risk tolerance (conservative/moderate/aggressive) to receive optimal position sizing, per-card allocation weights, Sharpe ratios, and rebalancing recommendations.",
+            "description": "Optimize a trading card portfolio with Markowitz mean-variance analysis over conformal-calibrated risk forecasts (Monte Carlo GBM/Merton available opt-in). Provide a list of card names, budget, and risk tolerance (conservative/moderate/aggressive) to receive optimal position sizing, per-card allocation weights, Sharpe ratios, and rebalancing recommendations.",
             "mimeType": "application/json",
             "accepts": {
                 "scheme": "exact",
@@ -965,13 +965,13 @@ async def root():
             "paid": [
                 {"path": "/api/v1/grade", "price": "$0.10", "description": "3-stage AI card grading (Vision + OpenCV + BGS capping) with ROI verdict"},
                 {"path": "/api/v1/grade-or-not", "price": "$0.10", "description": "Grade-or-Not ROI engine — should I grade this card?"},
-                {"path": "/api/v1/simulate", "price": "$0.015", "description": "conformal risk forecasting (Merton Jump-Diffusion)"},
+                {"path": "/api/v1/simulate", "price": "$0.015", "description": "conformal-calibrated risk forecast (Monte Carlo opt-in)"},
                 {"path": "/api/v1/trending", "price": "$0.025", "description": "Top movers by sales volume and price velocity"},
                 {"path": "/api/v1/market", "price": "$0.025", "description": "Daily market snapshot with top movers"},
                 {"path": "/api/v1/batch-triage", "price": "$0.50", "method": "POST", "description": "Grade up to 20 cards, ranked by expected profit"},
-                {"path": "/api/v1/portfolio-optimize", "price": "$0.50", "description": "Markowitz portfolio optimization with Merton Jump-Diffusion"},
-                {"path": "/api/v1/crypto-oracle", "price": "$0.05", "description": "NFT floor price oracle + Monte Carlo"},
-                {"path": "/api/v1/coin-history", "price": "$0.05", "description": "CoinGecko OHLC + Monte Carlo forecasting"},
+                {"path": "/api/v1/portfolio-optimize", "price": "$0.50", "description": "Markowitz portfolio optimization over conformal forecasts"},
+                {"path": "/api/v1/crypto-oracle", "price": "$0.05", "description": "NFT floor-price oracle + risk forecast"},
+                {"path": "/api/v1/coin-history", "price": "$0.05", "description": "CoinGecko OHLC + token price forecast"},
                 {"path": "/api/v1/arb-cross", "price": "$1.00", "description": "Cross-platform prediction market arbitrage"},
                 {"path": "/api/v1/arb-basket", "price": "$0.50", "description": "Basket arbitrage — guaranteed NO yield aggregator"},
                 {"path": "/api/v1/arb-weather", "price": "$0.25", "description": "Weather edge scanner — NWS vs Kalshi"},
@@ -1623,7 +1623,7 @@ async def agent_card():
             {
                 "id": "simulate_price",
                 "name": "Monte Carlo Simulation",
-                "description": "Merton Jump-Diffusion stochastic price models with full parameter transparency. $0.015 USDC.",
+                "description": "Conformal-calibrated risk forecasts with honest VaR + Safe-Hold/Momentum grades (Monte Carlo GBM/Merton opt-in). $0.015 USDC.",
                 "tags": ["simulation", "monte-carlo", "finance", "paid"],
             },
             {
@@ -1647,19 +1647,19 @@ async def agent_card():
             {
                 "id": "portfolio_optimize",
                 "name": "Portfolio Optimizer",
-                "description": "Markowitz mean-variance with Merton jump-diffusion Monte Carlo. $0.50 USDC.",
+                "description": "Markowitz mean-variance over conformal risk forecasts. $0.50 USDC.",
                 "tags": ["portfolio", "optimization", "finance", "paid"],
             },
             {
                 "id": "crypto_oracle",
                 "name": "Shroomy Web3 Oracle",
-                "description": "Alchemy NFT floor pricing + Monte Carlo forecasting. $0.05 USDC.",
+                "description": "Alchemy NFT floor pricing + risk forecast. $0.05 USDC.",
                 "tags": ["web3", "nft", "alchemy", "oracle", "paid"],
             },
             {
                 "id": "coin_history",
                 "name": "Historical Token Simulator",
-                "description": "CoinGecko historical pricing + Monte Carlo forecasting. $0.05 USDC.",
+                "description": "CoinGecko historical pricing + token price forecast. $0.05 USDC.",
                 "tags": ["crypto", "coingecko", "token", "history", "paid"],
             },
             {
