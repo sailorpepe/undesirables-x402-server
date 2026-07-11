@@ -3258,6 +3258,12 @@ def soul_rating(request: Request, token_id: int):
         opens = db.execute(
             "SELECT product_id, name, direction, as_of, matures_on, lock_hash FROM soul_predictions "
             "WHERE token_id=? AND scored=0 ORDER BY as_of DESC, product_id", (token_id,)).fetchall()
+        # scored history (add-only field, 2026-07-11): the public per-call record —
+        # full transparency once predictions mature, and souls can read their own results
+        scored = db.execute(
+            "SELECT name, direction, as_of, move_pct, hit, push FROM soul_predictions "
+            "WHERE token_id=? AND scored=1 ORDER BY as_of DESC, product_id LIMIT 12",
+            (token_id,)).fetchall()
         roots = {r[0]: {"merkle_root": r[1], "tx": r[3]} for r in
                  db.execute("SELECT as_of, root, n_leaves, tx_hash FROM merkle_roots")}
         return {"status": "ok", "token_id": token_id,
@@ -3265,6 +3271,10 @@ def soul_rating(request: Request, token_id: int):
                 "matured": agg[0] if agg else 0, "hits": agg[1] if agg else 0,
                 "pushes": agg[2] if agg else 0, "hit_rate": agg[3] if agg else None,
                 "brier": agg[4] if agg else None,
+                "recent_results": [{"name": r[0], "direction": r[1], "as_of": r[2],
+                                    "move_pct": r[3],
+                                    "outcome": ("push" if r[5] else ("hit" if r[4] else "miss"))}
+                                   for r in scored],
                 "open_predictions": [{"product_id": o[0], "name": o[1], "direction": o[2],
                                       "as_of": o[3], "matures_on": o[4], "lock_hash": o[5],
                                       "week_commitment": roots.get(o[3])} for o in opens],
