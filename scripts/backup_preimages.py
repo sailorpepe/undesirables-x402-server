@@ -108,16 +108,44 @@ def main():
     with open(os.path.join(REPO, "README.md"), "w") as f:
         f.write(README)
 
-    # 3) commit + push only if changed
+    # 3) commit + push, then VERIFY the remote actually received it. Loud +
+    # phone-alert on any failure — a silent push failure (Jul 8-11: cron had no
+    # headless git creds) left the disk-death insurance un-mirrored for 3 days.
     def git(*a):
         return subprocess.run(["git", "-C", REPO, *a], capture_output=True, text=True)
+
+    def alert(msg):
+        print(f"[backup] ❌ {msg}")
+        topic = os.environ.get("NTFY_TOPIC")
+        if not topic:
+            for line in open(os.path.join(X, ".env")):
+                if line.startswith("NTFY_TOPIC="):
+                    topic = line.split("=", 1)[1].strip().strip('"').strip("'")
+        if topic:
+            try:
+                import urllib.request
+                urllib.request.urlopen(urllib.request.Request(
+                    f"https://ntfy.sh/{topic}", data=f"PREIMAGE BACKUP FAILED: {msg}".encode(),
+                    headers={"Title": "Undesirables preimage backup", "Priority": "high", "Tags": "warning"}),
+                    timeout=15)
+            except Exception as e:
+                print(f"[backup] (ntfy alert also failed: {e})")
+
     git("add", "-A")
-    if git("diff", "--cached", "--quiet").returncode != 0:  # returncode 1 = staged changes present
-        git("commit", "-q", "-m", f"preimage backup: {len(weeks)} committed week(s), {sum(1 for _ in weeks)} roots")
-        p = git("push", "origin", "HEAD:main")
-        print(f"[backup] pushed — weeks: {[w[0] for w in weeks]} | {p.stderr.strip().splitlines()[-1] if p.stderr.strip() else 'ok'}")
-    else:
-        print(f"[backup] no changes ({len(weeks)} weeks already backed up)")
+    if git("diff", "--cached", "--quiet").returncode != 0:      # staged changes present
+        git("commit", "-q", "-m", f"preimage backup: {len(weeks)} committed week(s), {len(weeks)} roots")
+    p = git("push", "origin", "HEAD:main")
+    if p.returncode != 0:
+        alert(f"git push failed: {(p.stderr or p.stdout).strip().splitlines()[-1][:120] if (p.stderr or p.stdout).strip() else 'unknown'}")
+        raise SystemExit(1)
+    # VERIFY off-machine: local HEAD must equal origin/main (proves the push landed)
+    git("fetch", "origin", "-q")
+    local = git("rev-parse", "HEAD").stdout.strip()
+    remote = git("rev-parse", "origin/main").stdout.strip()
+    if local != remote:
+        alert(f"pushed but remote != local (HEAD {local[:8]} vs origin {remote[:8]}) — backup NOT off-machine")
+        raise SystemExit(1)
+    print(f"[backup] ✓ off-machine confirmed — weeks {[w[0] for w in weeks]}, remote @ {remote[:8]}")
 
 
 if __name__ == "__main__":
