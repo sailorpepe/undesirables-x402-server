@@ -17,3 +17,5 @@ graded_history.sqlite
 graded_history.sqlite-wal
 graded_history.sqlite-shm
 soul_predictions.sqlite
+aci_state.json
+aci_adjust.json
