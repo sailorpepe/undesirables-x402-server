@@ -3023,6 +3023,30 @@ def _load_conformal_offsets():
     return _CONFORMAL_OFFSETS_CACHE or None
 
 
+_ACI_CACHE = {"data": None, "loaded": 0}
+
+
+def _load_aci_adjust():
+    """AgACI width factors from aci_adjust.json (written nightly by
+    scripts/aci_update.py). Cached 10 min; ignored if older than 7 days so a
+    dead updater degrades to pure static conformal, never stale adaptation."""
+    import time as _t
+    from datetime import datetime as _dt
+    if _ACI_CACHE["data"] is not None and _t.time() - _ACI_CACHE["loaded"] < 600:
+        return _ACI_CACHE["data"]
+    try:
+        p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "aci_adjust.json")
+        adj = json.load(open(p))
+        upd = _dt.fromisoformat(adj.get("updated", "1970-01-01T00:00:00"))
+        if (_dt.now() - upd).days > 7:
+            adj = None
+    except Exception:
+        adj = None
+    _ACI_CACHE["data"] = adj
+    _ACI_CACHE["loaded"] = _t.time()
+    return adj
+
+
 def _conformal_forecast(card_name, current_price, days):
     """Deterministic drift forecast widened by split-conformal offsets. Honest, calibrated VaR with
     no Monte Carlo. Falls back to an uncalibrated sqrt-time band schedule until offsets are present."""
@@ -3050,6 +3074,17 @@ def _conformal_forecast(card_name, current_price, days):
     calibrated = bool(off) and bundle is not None and h <= int(off.get("max_horizon", 0))
     point = current_price * math.exp(mu * h / 365.0)
 
+    # AgACI adaptive-calibration layer (2026-07-13, see docs/research/): per-
+    # regime multiplicative width factors learned nightly from REALIZED ledger
+    # coverage (scripts/aci_update.py). Backtested: moves every regime/level
+    # closer to nominal (static bands were over-covering ~5-9pp -> sharper
+    # bands, VaR still above nominal). Absent/stale file => w=1 (pure static).
+    aci_w = {"band50": 1.0, "band90": 1.0, "var95": 1.0, "var99": 1.0}
+    if calibrated and regime in ("calm", "medium", "jumpy"):
+        adj = _load_aci_adjust()
+        if adj:
+            aci_w.update(adj.get("w", {}).get(regime, {}))
+
     def at(arr):                      # per-step value at horizon h (1-indexed), normalized -> price
         return arr[min(h, len(arr)) - 1] * current_price
     def band(level, zfb):
@@ -3061,9 +3096,10 @@ def _conformal_forecast(card_name, current_price, days):
             return at(bundle[name])
         return 0.013 * zfb * math.sqrt(h) * current_price
 
-    off50 = band("0.50", 0.674); off90 = band("0.90", 1.645)
-    var95 = max(0.0, point - tail("var95", 1.645))
-    cvar95 = max(0.0, point - tail("var99", 2.326))            # CVaR_95 ~ 99% tail (conservative proxy)
+    off50 = band("0.50", 0.674) * aci_w["band50"]
+    off90 = band("0.90", 1.645) * aci_w["band90"]
+    var95 = max(0.0, point - tail("var95", 1.645) * aci_w["var95"])
+    cvar95 = max(0.0, point - tail("var99", 2.326) * aci_w["var99"])   # CVaR_95 ~ 99% tail (conservative proxy)
     var_pct = round((var95 - current_price) / current_price * 100, 2)
     cvar_pct = round((cvar95 - current_price) / current_price * 100, 2)
     p5 = round(max(0.0, point - off90), 4); p25 = round(max(0.0, point - off50), 4)
