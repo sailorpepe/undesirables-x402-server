@@ -978,7 +978,29 @@ try:
                     "GET /api/v1/accuracy — free, prediction accuracy dashboard",
                 ],
             }
-            return JSONResponse(status_code=402, content=agent_response)
+
+            # ── CRITICAL (Bazaar validator, found 2026-07-14): the enriched 402
+            # must stay SPEC-CONFORMANT. The old code replaced the body and
+            # dropped the payment-required header, so the CDP Bazaar crawler
+            # (a non-SDK UA) saw no x402Version/accepts/extensions and the
+            # endpoint failed preflight → semantically unindexable. Merge the
+            # v2 envelope (from the payment-required header) INTO the guidance
+            # body and pass the header through untouched.
+            pr_header = response.headers.get("payment-required")
+            if pr_header:
+                try:
+                    import base64 as _b64
+                    envelope = json.loads(_b64.b64decode(pr_header + "=" * (-len(pr_header) % 4)))
+                    # envelope keys (x402Version, error, resource, accepts,
+                    # extensions) take precedence; guidance keys are additive.
+                    agent_response = {**envelope, **{k: v for k, v in agent_response.items() if k not in envelope}}
+                except Exception:
+                    pass
+            return JSONResponse(
+                status_code=402,
+                content=agent_response,
+                headers={"payment-required": pr_header} if pr_header else None,
+            )
 
         return response
 
