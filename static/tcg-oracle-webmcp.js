@@ -198,8 +198,47 @@
     },
   });
 
+  // ── Tool 8: Undesirables Collection — mint status ──────────────────
+  mc.addTool({
+    name: "undesirables_mint_status",
+    description:
+      "Live mint status for The Undesirables (UNDSR) NFT collection — " +
+      "4,444-supply ERC-721A on Ethereum mainnet. Returns supply minted/" +
+      "remaining, public mint price in ETH, wallet limits, and how to mint.",
+    schema: { type: "object", properties: {} },
+    handler: async () => oracleFetch("/api/v1/collection"),
+  });
+
+  // ── Tool 9: Undesirables — prepare unsigned mint transaction ───────
+  mc.addTool({
+    name: "undesirables_prepare_mint",
+    description:
+      "Build an UNSIGNED Ethereum transaction to mint The Undesirables NFT. " +
+      "Returns {to, data, value, chainId} which the USER must sign with " +
+      "their own wallet — this oracle never holds keys and cannot mint on " +
+      "anyone's behalf. Validates wallet limit and supply on-chain first.",
+    schema: {
+      type: "object",
+      properties: {
+        quantity: {
+          type: "number",
+          description: "How many to mint (public wallet limit applies, currently 2)",
+        },
+        to: {
+          type: "string",
+          description: "Optional recipient address; omit to mint to the transaction sender",
+        },
+      },
+      required: ["quantity"],
+    },
+    handler: async ({ quantity, to }) => {
+      const q = `quantity=${encodeURIComponent(quantity)}` + (to ? `&to=${encodeURIComponent(to)}` : "");
+      return oracleFetch(`/api/v1/collection/prepare-mint?${q}`);
+    },
+  });
+
   console.log(
-    "[TCG Oracle WebMCP] ✅ 7 tools registered — " +
-    "432K products available to AI agents via navigator.modelContext"
+    "[TCG Oracle WebMCP] ✅ 9 tools registered — " +
+    "432K products + UNDSR minting available to AI agents via navigator.modelContext"
   );
 })();

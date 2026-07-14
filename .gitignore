@@ -19,3 +19,6 @@ graded_history.sqlite-shm
 soul_predictions.sqlite
 aci_state.json
 aci_adjust.json
+
+# Internal strategy docs — never publish (GTM tactics stay private)
+docs/research/x402_market_landscape_*.md
