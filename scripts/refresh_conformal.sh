@@ -7,7 +7,10 @@ DIR=/Users/thegreatluna8713/Documents/undesirables-x402-server
 LIVE=/Users/thegreatluna8713/Documents/undesirables-mcp-server/.cache/market_memory.sqlite
 cd "$DIR"
 echo "[refresh_conformal] $(date) — refitting offsets"
-"$DIR/venv/bin/python" scripts/conformal_calibrate.py --db "$LIVE" --out "$DIR/conformal_offsets.json"
+# --origins 5 = NexCP multi-origin recency-weighted fit (backtested 2026-07-14:
+# calm VaR ~28% sharper OOT, safer VaR95 margins, 3x calibration data ->
+# stabler night-to-night; deep-tail quantiles carry a multi-origin cushion).
+"$DIR/venv/bin/python" scripts/conformal_calibrate.py --db "$LIVE" --out "$DIR/conformal_offsets.json" --origins 5
 # x402 caches offsets at process start. It has KeepAlive=true, so killing the
 # uvicorn worker triggers an immediate launchd respawn that reads the new file.
 pkill -f "uvicorn server:app" || true
