@@ -6,12 +6,12 @@ An x402 micropayment-gated API providing **financial intelligence for the $50B+ 
 
 # ⚡ TCG Oracle — AI Card Grading & Market Data
 
-**27 AI endpoints (14 paid via x402) · USDC micropayments on Base · Conformal-calibrated risk forecasts · AI card grading**
+**31 AI endpoints (14 paid via x402) · USDC micropayments on Base · Conformal-calibrated risk forecasts · AI card grading**
 
 ![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white)
 ![License: BSL-1.1](https://img.shields.io/badge/License-BSL_1.1-red?style=flat-square)
 ![x402](https://img.shields.io/badge/Protocol-x402-00dcff?style=flat-square)
-![Endpoints](https://img.shields.io/badge/Endpoints-28-ff14a0?style=flat-square)
+![Endpoints](https://img.shields.io/badge/Endpoints-31-ff14a0?style=flat-square)
 ![Base Network](https://img.shields.io/badge/Chain-Base_(L2)-0052FF?style=flat-square&logo=coinbase&logoColor=white)
 
 [API Docs](https://the-undesirables.com/docs) · [Live Terminal](https://the-undesirables.com/terminal) · [API Terms](https://the-undesirables.com/api-terms)
@@ -102,7 +102,7 @@ The server automatically registers its JSON schemas with the Coinbase CDP Facili
 
 ## 🔌 API Endpoints
 
-### 28 Endpoints (12 Paid, 16 Free)
+### 31 Endpoints (12 Paid, 19 Free)
 
 #### 💰 Financial Intelligence (Paid)
 
@@ -134,6 +134,9 @@ The server automatically registers its JSON schemas with the Coinbase CDP Facili
 | `GET /api/v1/alerts` | List active price alerts |
 | `DELETE /api/v1/alerts/{id}` | Unsubscribe from alert |
 | `POST /api/v1/alerts/check` | Manually trigger alert evaluation cycle |
+| `GET /api/v1/collection` | **The Undesirables (UNDSR) NFT** — live supply + public-mint status (4,444 ERC-721A on Ethereum mainnet) |
+| `GET /api/v1/collection/wallet/{address}` | UNDSR mint eligibility + holdings for any wallet |
+| `GET /api/v1/collection/prepare-mint` | Build an **unsigned** mint transaction — you sign with your own wallet; the server never holds keys |
 
 ---
 
