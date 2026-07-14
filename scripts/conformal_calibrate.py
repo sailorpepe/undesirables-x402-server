@@ -106,22 +106,63 @@ def load(db, n):
     return out
 
 
-def feat(card):
-    """Per-card features at the forecast origin (context = all but last H)."""
+def feat(card, back=0):
+    """Per-card features at a forecast origin `back` rows before the latest
+    one (back=0 = the newest origin, the legacy behavior: context = all but
+    the last H rows, outcomes = those H rows)."""
     dates, prices = card
-    cd, cp = dates[:-H], prices[:-H]
-    if len(cp) < 5:
+    cut = len(prices) - H - back
+    if cut < 5:
         return None
+    cd, cp = dates[:cut], prices[:cut]
     mu, sigma, _ = served_params(cd, cp)
     if mu is None:
         return None
-    S0 = cp[-1]; actual = prices[-H:]
+    S0 = cp[-1]; actual = prices[cut:cut + H]
     absf, lowf = [], []
     for h in range(1, H + 1):
         point = S0 * math.exp(mu * h / 365.0)
         absf.append(abs(actual[h - 1] - point) / S0)
         lowf.append((point - actual[h - 1]) / S0)
-    return {"sigma": sigma, "mu": mu, "S0": S0, "actual": actual, "absf": absf, "lowf": lowf}
+    return {"sigma": sigma, "mu": mu, "S0": S0, "actual": actual, "absf": absf,
+            "lowf": lowf, "back": back}
+
+
+# ── NexCP (Barber et al., "Conformal prediction beyond exchangeability") ──
+# Weighted split-conformal: calibration scores from MULTIPLE historical
+# origins per card, exponentially down-weighted by age, so the tails see far
+# more data while stale regimes fade instead of polluting current bands.
+def wconf_q(pairs, cov):
+    """Weighted conformal quantile with the +1 test-point correction.
+    pairs = [(score, weight)]; the hypothetical test point carries weight 1
+    (same as the newest origin), which keeps the estimate conservative."""
+    pairs = sorted(pairs)
+    tot = sum(w for _, w in pairs) + 1.0
+    acc = 0.0
+    for s, w in pairs:
+        acc += w
+        if (acc + 1.0) / tot >= cov:
+            return s
+    return pairs[-1][0]
+
+
+def fit_bundle_w(feats, half_life, stride, multi=False):
+    """Recency-weighted analog of fit_bundle. Weight = 0.5^(age_days/half_life),
+    age measured in rows back from the newest origin (rows ~ days here).
+    multi=True (origins>1): deep tail fit at 0.994 instead of 0.993 — the
+    single-origin margin was finite-sample slack that shrinks with 2x+ data;
+    this restores the VaR99<=1% cushion at negligible width cost."""
+    def wt(f):
+        return 0.5 ** ((f["back"] * 1.0) / half_life) if half_life else 1.0
+    v95_cov = 0.962 if multi else 0.96      # multi-origin: same finite-sample
+    v99_cov = 0.994 if multi else 0.993     # cushion logic as the deep tail
+    bands = {}
+    for L, cov in BANDS_ALL.items():
+        bands[L] = [round(wconf_q([(f["absf"][h], wt(f)) for f in feats], cov), 6)
+                    for h in range(H)]
+    var95 = [round(wconf_q([(f["lowf"][h], wt(f)) for f in feats], v95_cov), 6) for h in range(H)]
+    var99 = [round(wconf_q([(f["lowf"][h], wt(f)) for f in feats], v99_cov), 6) for h in range(H)]
+    return {"bands": bands, "var95": var95, "var99": var99}
 
 
 def fit_bundle(feats):
@@ -156,15 +197,69 @@ def validate(feats, bundles, th, Hval):
     return agg
 
 
+def nexcp_backtest(cards, origins, half_life, stride):
+    """Out-of-time comparison on the NEWEST window (back=0), which no method
+    is allowed to calibrate on here:
+      legacy : single origin at back=stride  (the current method, shifted)
+      multi  : origins at back=stride..origins*stride, EQUAL weight
+      nexcp  : same origins, recency-weighted (half_life)
+    Reports per-regime coverage + mean VaR95 offset (sharpness)."""
+    ev = [x for x in (feat(c, 0) for c in cards) if x]
+    pools = {k: [] for k in ("legacy", "multi", "nexcp")}
+    for c in cards:
+        for k in range(1, origins + 1):
+            f = feat(c, k * stride)
+            if not f:
+                continue
+            if k == 1:
+                pools["legacy"].append(f)
+            pools["multi"].append(f)
+            pools["nexcp"].append(f)
+    print(f"[nexcp-backtest] eval cards={len(ev)} | calib pool: legacy={len(pools['legacy'])} "
+          f"multi/nexcp={len(pools['multi'])} (origins={origins}, stride={stride}, half_life={half_life})")
+
+    # shared regime thresholds from the legacy pool (what production would see)
+    sig = sorted(f["sigma"] for f in pools["legacy"])
+    th = [round(sig[len(sig) // 3], 4), round(sig[2 * len(sig) // 3], 4)]
+
+    for name in ("legacy", "multi", "nexcp"):
+        hl = half_life if name == "nexcp" else 0
+        bundles = {}
+        for rg in REGIMES:
+            fs = [f for f in pools[name] if regime_of(f["sigma"], th) == rg] or pools[name]
+            bundles[rg] = fit_bundle_w(fs, hl, stride, multi=(name != "legacy"))
+        agg = validate(ev, bundles, th, 30)
+        print(f"  ── {name} ──   (targets cov 80/90/95, VaR95<=5, VaR99<=1)")
+        for rg in REGIMES:
+            g = agg[rg]; nn = max(g["n"], 1)
+            w95 = bundles[rg]["var95"][13]
+            print(f"    {rg:<8} n={g['n']//30:>4}  cov80 {100*g['c80']/nn:5.1f}%  cov90 {100*g['c90']/nn:5.1f}%  "
+                  f"cov95 {100*g['c95']/nn:5.1f}%  VaR95 {100*g['v95']/nn:4.1f}%  VaR99 {100*g['v99']/nn:4.1f}%  "
+                  f"var95off@14 {w95:.4f}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--db", default="/tmp/mm_readonly.sqlite")
     ap.add_argument("--out", default=DEFAULT_OUT)
     ap.add_argument("--n", type=int, default=2000)
+    ap.add_argument("--origins", type=int, default=1,
+                    help="calibration origins per card (1 = legacy single-window; >1 enables NexCP)")
+    ap.add_argument("--half-life", type=float, default=60.0,
+                    help="recency half-life in days for NexCP weighting")
+    ap.add_argument("--stride", type=int, default=21, help="rows between origins")
+    ap.add_argument("--backtest", action="store_true",
+                    help="compare legacy vs multi-origin vs NexCP out-of-time; no file writes")
     a = ap.parse_args()
 
     cards = load(a.db, a.n)
-    feats = [x for x in (feat(c) for c in cards) if x]
+    if a.backtest:
+        nexcp_backtest(cards, max(a.origins, 5), a.half_life, a.stride)
+        return
+    if a.origins > 1:
+        feats = [x for c in cards for x in (feat(c, k * a.stride) for k in range(a.origins)) if x]
+    else:
+        feats = [x for x in (feat(c) for c in cards) if x]
     if len(feats) < 120:
         print(f"❌ only {len(feats)} usable cards — too few"); sys.exit(1)
     calib = feats[0::2]; evalf = feats[1::2]
@@ -174,10 +269,13 @@ def main():
     t1 = round(sig[len(sig) // 3], 4); t2 = round(sig[2 * len(sig) // 3], 4)
     th = [t1, t2]
 
-    # fit per-regime bundles (on calib) + global fallback
-    bundles = {rg: fit_bundle([f for f in calib if regime_of(f["sigma"], th) == rg] or calib)
+    # fit per-regime bundles (on calib) + global fallback.
+    # origins>1 -> NexCP recency-weighted fit; origins=1 -> legacy unweighted.
+    hl = a.half_life if a.origins > 1 else 0
+    bundles = {rg: fit_bundle_w([f for f in calib if regime_of(f["sigma"], th) == rg] or calib,
+                                hl, a.stride, multi=(a.origins > 1))
                for rg in REGIMES}
-    glob = fit_bundle(calib)
+    glob = fit_bundle_w(calib, hl, a.stride, multi=(a.origins > 1))
 
     # ── validate OOS ──
     print(f"[conformal-regime] calib={len(calib)} eval={len(evalf)} | thresholds sigma_annual t1={t1} t2={t2} (db={a.db})")
