@@ -383,6 +383,54 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 _REQLOG = os.path.join(os.path.expanduser("~"), "logs", "oracle_requests.jsonl")
 _REQLOG_SKIP = ("/health", "/favicon")
 
+# ── Organic-settlement alarm (market-landscape playbook #3, 2026-07-14) ──
+# The first NON-self paid settlement is the signal that the agent-buyer wave
+# has started; we want to know within seconds, not weeks. Self wallets =
+# our smoke-test buyer + our own receiving address.
+_SELF_WALLETS = set()
+try:
+    from eth_account import Account as _Acct
+    _bpk = os.getenv("BUYER_PRIVATE_KEY")
+    if _bpk:
+        _SELF_WALLETS.add(_Acct.from_key(_bpk).address.lower())
+except Exception:
+    pass
+_PAYER_ALERTED = set()  # alert once per payer per process
+
+
+def _decode_payer(request):
+    """Payer address from the x402 X-PAYMENT header (exact/EVM EIP-3009)."""
+    import base64
+    hdr = request.headers.get("x-payment")
+    if not hdr:
+        return None
+    try:
+        payload = json.loads(base64.b64decode(hdr + "=" * (-len(hdr) % 4)))
+        return (payload.get("payload", {}).get("authorization", {}).get("from") or "").lower() or None
+    except Exception:
+        return None
+
+
+def _alert_organic_settlement(payer, path):
+    """Fire a high-priority phone alert in a daemon thread — never block serving."""
+    import threading
+    import urllib.request as _ur
+
+    def _send():
+        topic = os.getenv("NTFY_TOPIC")
+        if not topic:
+            return
+        body = (f"🎉 FIRST ORGANIC x402 SETTLEMENT\npayer: {payer}\nendpoint: {path}\n"
+                f"A real buyer paid — the demand wave may have started.")
+        try:
+            _ur.urlopen(_ur.Request(
+                f"https://ntfy.sh/{topic}", data=body.encode(),
+                headers={"Title": "ORGANIC BUYER on the oracle", "Priority": "urgent", "Tags": "moneybag,tada"}),
+                timeout=15)
+        except Exception:
+            pass
+    threading.Thread(target=_send, daemon=True).start()
+
 
 @app.middleware("http")
 async def _request_logger(request, call_next):
@@ -401,6 +449,15 @@ async def _request_logger(request, call_next):
                 "ua": request.headers.get("user-agent", "")[:300],
                 "ref": request.headers.get("referer", "")[:200],
             }
+            # settled payment? record the payer + alarm on the first organic one
+            if response.status_code == 200 and "x-payment" in request.headers:
+                payer = _decode_payer(request)
+                if payer:
+                    rec["payer"] = payer
+                    rec["organic"] = payer not in _SELF_WALLETS
+                    if rec["organic"] and payer not in _PAYER_ALERTED:
+                        _PAYER_ALERTED.add(payer)
+                        _alert_organic_settlement(payer, path)
             os.makedirs(os.path.dirname(_REQLOG), exist_ok=True)
             with open(_REQLOG, "a", encoding="utf-8") as f:
                 f.write(json.dumps(rec) + "\n")
@@ -961,6 +1018,9 @@ async def root():
                 {"path": "/api/v1/recommend", "method": "POST", "description": "AI workflow advisor — tells you which endpoints to call and in what order"},
                 {"path": "/api/v1/phygital/stats", "description": "Tokenized card market overview — 267K+ cards, categories, grade distribution"},
                 {"path": "/api/v1/phygital/search", "description": "Search tokenized graded cards on Courtyard.io"},
+                {"path": "/api/v1/collection", "description": "The Undesirables (UNDSR) NFT — live supply + public-mint status on Ethereum mainnet"},
+                {"path": "/api/v1/collection/wallet/{address}", "description": "UNDSR mint eligibility + holdings for a wallet"},
+                {"path": "/api/v1/collection/prepare-mint", "description": "Build an unsigned UNDSR mint transaction — you sign with your own wallet, we never hold keys"},
             ],
             "paid": [
                 {"path": "/api/v1/grade", "price": "$0.10", "description": "3-stage AI card grading (Vision + OpenCV + BGS capping) with ROI verdict"},
@@ -1213,6 +1273,17 @@ GET /api/v1/forecast/{product_id} (resolving a name via /api/v1/search first).
 - GET /health
 - Agent discovery: /.well-known/ai-plugin.json , /.well-known/agent.json
 
+## The Undesirables NFT collection (free endpoints)
+- GET /api/v1/collection                       live UNDSR supply + public-mint status
+    4,444-supply ERC-721A (Scatter.art Archetype) on ETHEREUM MAINNET at
+    0xA893648A701C03B14bF2FB767B72b2C55ed5c17A. Each card's "soul" is rated by
+    this oracle's on-chain SoulPredictionOracle.
+- GET /api/v1/collection/wallet/{address}      mint eligibility + holdings
+- GET /api/v1/collection/prepare-mint?quantity=&to=
+    Returns an UNSIGNED transaction {to, data, value, chainId}. Sign it with
+    YOUR OWN wallet and broadcast — this service never holds keys and cannot
+    mint for you. Validates wallet limit / list supply / batch size on-chain.
+
 ## How to read a forecast
 - "90% range $X-$Y": a calibrated 90% prediction interval — built to actually
   contain the price ~90% of the time (coverage is measured, not assumed).
@@ -1241,6 +1312,63 @@ Contact: @undesirables_ai on X
 @app.get("/llms.txt", include_in_schema=False)
 async def llms_txt():
     return PlainTextResponse(_LLMS_TXT)
+
+
+# ---------------------------------------------------------------------------
+# The Undesirables NFT collection — agent-legible mint layer (all FREE).
+# Reads live Archetype state on Ethereum mainnet; prepare-mint returns an
+# UNSIGNED transaction the caller signs with their own wallet. This server
+# never holds keys and never broadcasts. See collection.py.
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/collection", tags=["Free"])
+@limiter.limit("60/minute")
+async def collection_info(request: Request):
+    """🃏 **FREE** — The Undesirables (UNDSR) live collection + public-mint status.
+
+    4,444-supply ERC-721A on Ethereum mainnet (Scatter.art Archetype contract).
+    Returns supply, live public-mint price/limits, and how to mint. Souls behind
+    every card are rated by this oracle's on-chain SoulPredictionOracle."""
+    import collection as _coll
+    try:
+        return _coll.mint_status()
+    except Exception as e:
+        return JSONResponse(status_code=503, content={"status": "error", "detail": f"chain read failed: {str(e)[:120]}"})
+
+
+@app.get("/api/v1/collection/wallet/{address}", tags=["Free"])
+@limiter.limit("30/minute")
+async def collection_wallet(request: Request, address: str):
+    """🃏 **FREE** — Mint eligibility + UNDSR holdings for a wallet."""
+    import collection as _coll
+    try:
+        return _coll.wallet_status(address)
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"status": "error", "detail": str(e)[:120]})
+    except Exception as e:
+        return JSONResponse(status_code=503, content={"status": "error", "detail": f"chain read failed: {str(e)[:120]}"})
+
+
+@app.get("/api/v1/collection/prepare-mint", tags=["Free"])
+@limiter.limit("20/minute")
+async def collection_prepare_mint(
+    request: Request,
+    quantity: int = Query(1, description="How many to mint (public list wallet limit applies)"),
+    to: Optional[str] = Query(None, description="Optional recipient address (uses mintTo); omit to mint to the tx sender"),
+):
+    """🃏 **FREE** — Build an UNSIGNED public-mint transaction for The Undesirables.
+
+    Returns {to, data, value, chainId} ready to sign with YOUR wallet on
+    Ethereum mainnet. This service never holds keys, never signs, and cannot
+    mint on your behalf — prepare-and-sign only. Validates quantity against
+    the live wallet limit, list supply, and batch size before encoding."""
+    import collection as _coll
+    try:
+        return _coll.prepare_mint_tx(quantity, to)
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"status": "error", "detail": str(e)[:160]})
+    except Exception as e:
+        return JSONResponse(status_code=503, content={"status": "error", "detail": f"chain read failed: {str(e)[:120]}"})
 
 
 used_casper_tx_hashes = set()
@@ -1601,6 +1729,16 @@ async def agent_card():
                 "name": "Search TCG Products",
                 "description": "Search 370,158 TCG products across 25 games. Free.",
                 "tags": ["tcg", "pokemon", "search", "free"],
+            },
+            {
+                "id": "mint_undesirables",
+                "name": "Mint The Undesirables NFT",
+                "description": (
+                    "Live mint status, wallet eligibility, and unsigned-transaction builder for "
+                    "The Undesirables (UNDSR) — 4,444 ERC-721A collection on Ethereum mainnet. "
+                    "Prepare-and-sign only: you sign with your own wallet. Free."
+                ),
+                "tags": ["nft", "mint", "collectibles", "ethereum", "free"],
             },
             {
                 "id": "market_data",
