@@ -147,61 +147,9 @@ def generate_simulate(data):
 
 
 # ---------------------------------------------------------------------------
-# 2. GRADING ROI BAR CHART
-# ---------------------------------------------------------------------------
-def generate_arb_grade(data):
-    """Horizontal bar chart showing grading ROI for top cards."""
-    _setup_style()
-
-    cards = data.get("top_cards", [])[:8]
-    if not cards:
-        return None
-
-    fig, ax = plt.subplots(figsize=(12, 6.5))
-
-    names = []
-    rois = []
-    profits = []
-    raw_prices = []
-    for card in reversed(cards):  # reverse for bottom-to-top
-        name = card.get("card_name", "?")
-        if len(name) > 35:
-            name = name[:32] + "..."
-        names.append(name)
-        rois.append(card.get("roi_pct", 0))
-        profits.append(card.get("expected_profit", 0))
-        raw_prices.append(card.get("raw_price", 0))
-
-    y_pos = np.arange(len(names))
-    colors = [ACCENT_GREEN if r > 100 else ACCENT_BLUE if r > 60 else ACCENT_PURPLE for r in rois]
-
-    bars = ax.barh(y_pos, rois, color=colors, height=0.65, edgecolor="none", alpha=0.85)
-
-    # Value labels
-    for i, (bar, roi, profit, raw) in enumerate(zip(bars, rois, profits, raw_prices)):
-        ax.text(bar.get_width() + 2, bar.get_y() + bar.get_height()/2,
-                f"{roi:.0f}% ROI  (+${profit:.0f})",
-                fontsize=10, fontweight="bold", color=colors[i], va="center")
-        ax.text(2, bar.get_y() + bar.get_height()/2,
-                f"${raw:.0f} raw",
-                fontsize=9, color=BG_COLOR, va="center", fontweight="bold")
-
-    ax.set_yticks(y_pos)
-    ax.set_yticklabels(names, fontsize=11)
-    ax.set_xlabel("Return on Investment (%)", fontsize=12)
-    ax.set_title("🃏 Grading ROI Scanner — Which Cards Beat the Fee?", fontsize=17,
-                 fontweight="bold", color=TEXT_PRIMARY, pad=15)
-
-    # Cost note
-    ax.text(0.98, 0.02, "PSA grading cost: $25 (economy + shipping)",
-            transform=ax.transAxes, fontsize=9, color=TEXT_SECONDARY,
-            ha="right", va="bottom")
-
-    ax.grid(True, axis="x", alpha=0.3)
-    ax.set_xlim(0, max(rois) * 1.35)
-
-    _add_branding(fig, f"{data['count']} cards with positive ROI · Price range: {data.get('price_range', 'N/A')}")
-    return _save(fig, "arb_grade")
+# 2. (removed) grading-ROI bar chart — the /api/v1/arb-grade route no longer
+# exists; its visual generator was pruned 2026-07-15 along with the dead
+# smoke-test entry and agent.json skill.
 
 
 # ---------------------------------------------------------------------------
@@ -433,7 +381,6 @@ def generate_arb_weather(data):
 # ---------------------------------------------------------------------------
 GENERATORS = {
     "simulate": generate_simulate,
-    "arb-grade": generate_arb_grade,
     "arb-cross": generate_arb_cross,
     "arb-weather": generate_arb_weather,
     "digest": generate_digest,
