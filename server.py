@@ -1793,12 +1793,6 @@ async def agent_card():
                 "tags": ["trending", "market", "volume", "paid"],
             },
             {
-                "id": "arb_grade",
-                "name": "Raw Card Arbitrage Scanner",
-                "description": "Finds cards where grading ROI exceeds threshold. $0.15 USDC.",
-                "tags": ["arbitrage", "grading", "roi", "paid"],
-            },
-            {
                 "id": "batch_triage",
                 "name": "Batch Card Triage",
                 "description": "Grade up to 20 card images and rank by expected profit. $0.50 USDC.",
