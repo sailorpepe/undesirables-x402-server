@@ -36,7 +36,6 @@ SWEEP_EXTRA = [
     ("grade",              "$0.10",  "GET",  f"{BASE}/api/v1/grade?image_url={IMG}&game=Pokemon", None),
     ("grade-or-not",       "$0.10",  "GET",  f"{BASE}/api/v1/grade-or-not?card_name=Base%20Set%20Charizard%20Holo", None),
     ("phygital/arbitrage", "$0.10",  "GET",  f"{BASE}/api/v1/phygital/arbitrage", None),
-    ("arb-grade",          "$0.15",  "GET",  f"{BASE}/api/v1/arb-grade", None),
     ("arb-weather",        "$0.25",  "GET",  f"{BASE}/api/v1/arb-weather", None),
     ("arb-basket",         "$0.50",  "GET",  f"{BASE}/api/v1/arb-basket", None),
     ("portfolio-optimize", "$0.50",  "GET",  f"{BASE}/api/v1/portfolio-optimize?cards=Charizard,Pikachu,Blastoise&budget=1000", None),
