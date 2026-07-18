@@ -1022,7 +1022,7 @@ async def root():
     """Server info and available endpoints."""
     return {
         "name": "TCG Oracle — Financial Intelligence for Collectibles",
-        "tagline": "Conformal risk forecasts, AI grading, and Safe-Hold/Momentum card grades for 442K+ trading cards across 25+ games",
+        "tagline": "Conformal risk forecasts, AI grading, and Safe-Hold/Momentum card grades for 446K+ trading cards across 25+ games",
         "version": "2.0.0",
         "x402_enabled": X402_ENABLED,
         "total_endpoints": 27,
@@ -1030,7 +1030,7 @@ async def root():
         "network": NETWORK,
         "endpoints": {
             "free": [
-                {"path": "/api/v1/search", "description": "Search 432K+ TCG products — names and IDs only (3 results max)"},
+                {"path": "/api/v1/search", "description": "Search 446K+ TCG products — names and IDs only (3 results max)"},
                 {"path": "/api/v1/accuracy", "description": "Public prediction accuracy dashboard (MAE, hit rates)"},
                 {"path": "/api/v1/accuracy/report", "method": "POST", "description": "Report actual grade vs prediction"},
                 {"path": "/api/v1/alerts/subscribe", "method": "POST", "description": "Subscribe to price alert webhooks"},
@@ -1688,7 +1688,7 @@ async def ai_plugin():
             "Financial intelligence API for trading card collectors. "
             "AI grading, conformal risk forecasting, ROI analysis, "
             "arbitrage detection, and portfolio optimization across "
-            "442K+ products and 25+ card games."
+            "446K+ products and 25+ card games."
         ),
         "description_for_model": (
             "TCG Oracle provides financial intelligence for collectible trading cards. "
@@ -2029,7 +2029,7 @@ def search_tcg_products(
     source: Optional[str] = Query(None, description="Source identifier (e.g., 'widget')"),
 ):
     """
-    🆓 **FREE** — Search 432K+ TCG products across 13 game categories.
+    🆓 **FREE** — Search 446K+ TCG products across 25+ game categories.
 
     Returns product names, sets, and IDs from the TCGCSV database.
     Uses FTS5 full-text search with LIKE fallback.

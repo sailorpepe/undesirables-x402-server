@@ -43,7 +43,7 @@
   mc.addTool({
     name: "tcg_search",
     description:
-      "Search 432,000+ trading cards across Pokémon, Magic: The Gathering, " +
+      "Search 446,000+ trading cards across Pokémon, Magic: The Gathering, " +
       "Yu-Gi-Oh!, Lorcana, and 9 other categories. Returns product IDs, " +
       "names, categories, and current market prices.",
     schema: {
@@ -137,7 +137,7 @@
     description:
       "Get a cryptographic Merkle proof for a card's price, verifiable " +
       "on-chain against the LitVM LiteForge Merkle Oracle contract " +
-      "(0xc159550e9e751d6E75A0A06Bb04cfA2f59aD636B). Covers 276,000+ " +
+      "(0xc159550e9e751d6E75A0A06Bb04cfA2f59aD636B). Covers 284,000+ " +
       "actively priced products.",
     schema: {
       type: "object",
@@ -239,6 +239,6 @@
 
   console.log(
     "[TCG Oracle WebMCP] ✅ 9 tools registered — " +
-    "432K products + UNDSR minting available to AI agents via navigator.modelContext"
+    "446K products + UNDSR minting available to AI agents via navigator.modelContext"
   );
 })();
