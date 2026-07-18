@@ -1405,7 +1405,7 @@ async def casper_price_search(
     tx_hash: Optional[str] = Query(None, description="Casper deploy hash proving 1 CSPR payment"),
 ):
     """
-    💰 **1 CSPR (~$0.002)** — Search 276K+ TCG products with Merkle-verified pricing.
+    💰 **1 CSPR (~$0.002)** — Search 284K+ Merkle-priced TCG products.
 
     Returns market prices, low prices, and a cryptographic Merkle proof that the
     agent can verify against the on-chain root stored in the MerklePriceOracle
@@ -1428,8 +1428,8 @@ async def casper_price_search(
                 "status": "payment_required",
                 "service": "Casper TCG Price Oracle",
                 "description": (
-                    "Search 276K+ TCG products and receive Merkle-verified pricing data. "
-                    "The Merkle root is committed on-chain daily to the MerklePriceOracle "
+                    "Search 284K+ TCG products and receive Merkle-verified pricing data. "
+                    "The Merkle root is committed on-chain hourly to the MerklePriceOracle "
                     "contract on Casper Testnet, enabling trustless price verification."
                 ),
                 "price": "1 CSPR",
@@ -1491,13 +1491,26 @@ async def casper_price_search(
     if transfer:
         args = transfer.get("args", [])
         amount = 0
+        target = ""
         for arg in args:
             if arg[0] == "amount":
                 amount = int(arg[1].get("parsed", "0"))
+            elif arg[0] == "target":
+                target = str(arg[1].get("parsed", ""))
         if amount < 1000000000:
             raise HTTPException(
                 status_code=402,
                 detail=f"Insufficient payment. Required 1 CSPR (1,000,000,000 motes), got {amount} motes.",
+            )
+        # the transfer must actually pay US — target is the recipient's
+        # account hash (or public key, depending on client). Added 2026-07-18:
+        # amount alone let any 1-CSPR transfer to anyone unlock the endpoint.
+        OUR_ACCOUNT = "90596f64250d151f171e25f6c8df130e6bf573152217bebf04acb25f225c3628"
+        tgt = target.lower().replace("account-hash-", "")
+        if tgt and tgt != OUR_ACCOUNT and tgt != (CASPER_PAYMENT_ADDRESS or "").lower():
+            raise HTTPException(
+                status_code=402,
+                detail="Payment target mismatch — the transfer must pay the oracle's address.",
             )
 
     used_casper_tx_hashes.add(tx_hash)
