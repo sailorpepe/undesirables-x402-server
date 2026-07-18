@@ -102,7 +102,7 @@ The server automatically registers its JSON schemas with the Coinbase CDP Facili
 
 ## 🔌 API Endpoints
 
-### 31 Endpoints (12 Paid, 19 Free)
+### 31 Endpoints (14 Paid, 17 Free)
 
 #### 💰 Financial Intelligence (Paid)
 
@@ -125,7 +125,7 @@ The server automatically registers its JSON schemas with the Coinbase CDP Facili
 
 | Endpoint | What It Does |
 |----------|-------------|
-| `GET /api/v1/search` | Search 442K+ TCG products across 13 games |
+| `GET /api/v1/search` | Search 446K+ TCG products across 25+ games |
 | `GET /api/v1/market` | Daily market snapshot with top movers |
 | `POST /api/v1/recommend` | **Self-navigating API advisor** — describe your goal, get a workflow |
 | `GET /api/v1/accuracy` | Public prediction accuracy dashboard (MAE, hit rates) |
