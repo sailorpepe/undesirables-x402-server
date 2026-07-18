@@ -26,7 +26,10 @@ if ! fit; then
     sleep 300
     if ! fit; then
       echo "[refresh_conformal] ALL attempts failed"
-      TOPIC=$(grep '^NTFY_TOPIC=' "$DIR/.env" | cut -d= -f2)
+      # TCC-safe topic lookup: on 2026-07-17 the denial window covered .env
+      # too, so the failure alert itself was denied. ~/.config is outside
+      # ~/Documents and always readable.
+      TOPIC=$(cat "$HOME/.config/undesirables_ntfy_topic" 2>/dev/null || grep '^NTFY_TOPIC=' "$DIR/.env" | cut -d= -f2)
       [ -n "$TOPIC" ] && curl -s -m 15 -X POST "https://ntfy.sh/$TOPIC" \
         -H "Title: Conformal refit FAILED (3 attempts)" -H "Priority: high" -H "Tags: rotating_light" \
         -d "All 3 refit attempts failed at $(date). Server keeps yesterday's offsets. Check ~/logs/conformal_refresh.log — recurring TCC EPERM pattern documented in MASTER_TRACKER Jul-16." >/dev/null
