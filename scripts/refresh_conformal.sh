@@ -1,7 +1,12 @@
 #!/bin/bash
-# Nightly: refit REGIME-AWARE split-conformal offsets on the live DB and reload
+# MANUAL-USE refit script. The NIGHTLY refit no longer runs from here —
+# as of 2026-07-17 it is Step 7 of ~/bin/daily_pipeline.sh (launchd 3am),
+# because standalone cron/launchd invocations of this script hit transient
+# TCC EPERM on 7 of 18 nights (bash reading a ~/Documents script from a
+# fresh non-interactive context). Keep this for interactive/manual refits;
+# keep the retry ladder for those too.
+# Refits REGIME-AWARE split-conformal offsets on the live DB and reloads
 # x402. Emits per-vol-tercile (calm/medium/jumpy) bundles + a global fallback.
-# Runs after the 3 AM daily-pipeline DB refresh. Read-only on the DB.
 set -e
 DIR=/Users/thegreatluna8713/Documents/undesirables-x402-server
 LIVE=/Users/thegreatluna8713/Documents/undesirables-mcp-server/.cache/market_memory.sqlite
