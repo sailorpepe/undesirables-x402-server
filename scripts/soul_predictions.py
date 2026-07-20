@@ -272,17 +272,32 @@ def commit_onchain():
         print(f"[commit] week {week_id} already committed on-contract — marking done")
         db.execute("UPDATE merkle_roots SET tx_hash='(pre-committed on contract)' WHERE as_of=?", (as_of,))
         db.commit(); db.close(); return
-    tx = oracle.functions.commitRoot(week_id, bytes.fromhex(root), int(n)).build_transaction({
-        "chainId": w3.eth.chain_id, "from": acct.address,
-        "nonce": w3.eth.get_transaction_count(acct.address, "pending"),
-        "gas": 150000, "gasPrice": w3.eth.gas_price})
-    signed = w3.eth.account.sign_transaction(tx, pk)
-    raw = getattr(signed, "raw_transaction", None) or signed.rawTransaction
-    txh = w3.eth.send_raw_transaction(raw).hex()
-    rc = w3.eth.wait_for_transaction_receipt(txh, timeout=120)
-    db.execute("UPDATE merkle_roots SET tx_hash=? WHERE as_of=?", (txh, as_of))
-    db.commit(); db.close()
-    print(f"[commit] week {week_id} root {root[:16]}… -> SoulPredictionOracle tx {txh} (status {rc.status})")
+    # 2026-07-20: the Jul-19 commit died with "max fee per gas less than block
+    # base fee" — bare w3.eth.gas_price (fetched pre-send) was ticked past by a
+    # transient LitVM base-fee rise. Buffer 3x + retry with escalating gas so a
+    # gas blip can never leave a weekly root uncommitted (load-bearing: roots
+    # must land BEFORE outcomes). Idempotent: the commitments() guard above and
+    # the on-chain immutability mean a re-run of an already-mined week is a noop.
+    last_err = None
+    for attempt, mult in enumerate((3, 6, 12), 1):
+        try:
+            tx = oracle.functions.commitRoot(week_id, bytes.fromhex(root), int(n)).build_transaction({
+                "chainId": w3.eth.chain_id, "from": acct.address,
+                "nonce": w3.eth.get_transaction_count(acct.address, "pending"),
+                "gas": 150000, "gasPrice": int(w3.eth.gas_price * mult)})
+            signed = w3.eth.account.sign_transaction(tx, pk)
+            raw = getattr(signed, "raw_transaction", None) or signed.rawTransaction
+            txh = w3.eth.send_raw_transaction(raw).hex()
+            rc = w3.eth.wait_for_transaction_receipt(txh, timeout=120)
+            db.execute("UPDATE merkle_roots SET tx_hash=? WHERE as_of=?", (txh, as_of))
+            db.commit(); db.close()
+            print(f"[commit] week {week_id} root {root[:16]}… -> SoulPredictionOracle tx {txh} (status {rc.status}, {mult}x gas)")
+            return
+        except Exception as e:
+            last_err = e
+            print(f"[commit] attempt {attempt} ({mult}x gas) failed: {str(e)[:120]}")
+    db.close()
+    raise RuntimeError(f"[commit] week {week_id} root NOT committed after 3 attempts: {last_err}")
 
 
 if __name__ == "__main__":
