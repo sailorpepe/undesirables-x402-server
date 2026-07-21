@@ -2275,7 +2275,7 @@ def search_tcg_products(
                     cat_name = next((k for k, v in GAME_CATEGORIES.items() if v == cat_id), None)
                     item["category"] = cat_name.title() if cat_name else None
                 limited.append(item)
-            return {
+            payload = {
                 "status": "ok",
                 "query": query,
                 "results_shown": len(limited),
@@ -2283,6 +2283,19 @@ def search_tcg_products(
                 "note": "Free tier shows top results without pricing. Use paid endpoints for full data." if not is_widget else None,
                 "data": {"results": limited},
             }
+            # Tell the caller HOW to search when we came up empty, instead of
+            # leaving an agent to guess. Matching is on the card NAME only —
+            # there is no set/group column — so set-qualified queries look
+            # broken unless we say so. Agents observably retry on this hint.
+            if not is_widget and not limited:
+                payload["search_tip"] = (
+                    "No matches. This catalog searches the CARD NAME only — set and "
+                    "edition words ('Base Set', '1st Edition', 'Holo') are not searchable. "
+                    "Retry with just the card name, e.g. 'Charizard' instead of "
+                    "'Base Set Charizard Holo', then pick the printing you want from the "
+                    "results by product_id."
+                )
+            return payload
     finally:
         db.close()
 
