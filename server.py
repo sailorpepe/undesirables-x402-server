@@ -484,6 +484,9 @@ try:
         "GET /api/v1/grade": {
             "description": "Grade any physical Pokémon, Magic: The Gathering, Yu-Gi-Oh, or Digimon trading card using a 3-stage AI pipeline: (1) Qwen Vision LLM analyzes corners, edges, and surface defects, (2) OpenCV measures exact centering ratios programmatically, (3) BGS professional capping algorithm adjusts the final grade. Returns PSA/Beckett-calibrated subgrades and an overall condition score. Accepts card image URLs or base64.",
             "mimeType": "application/json",
+            "serviceName": "The Undesirables Oracle",
+            "tags": ["card-grading", "pokemon", "magic-the-gathering", "computer-vision", "collectibles"],
+            "iconUrl": "https://the-undesirables.com/favicon.ico",
             "accepts": {
                 "scheme": "exact",
                 "payTo": PAYMENT_ADDRESS,
@@ -518,6 +521,9 @@ try:
         "GET /api/v1/simulate": {
             "description": "Predict the future market value of any collectible trading card with a conformal-calibrated risk forecast (default): regime-aware split-conformal bands fit on real holdout residuals, returning calibrated forecast percentiles (5th–95th), honest VaR/CVaR, and Safe-Hold/Momentum letter grades. Monte Carlo models (GBM / Merton Jump-Diffusion with Poisson jumps) are available opt-in via model=. Covers Pokémon, Magic, Yu-Gi-Oh, sports cards, and any tokenized real-world asset.",
             "mimeType": "application/json",
+            "serviceName": "The Undesirables Oracle",
+            "tags": ["conformal-prediction", "risk-forecast", "price-forecast", "var", "collectibles"],
+            "iconUrl": "https://the-undesirables.com/favicon.ico",
             "accepts": {
                 "scheme": "exact",
                 "payTo": PAYMENT_ADDRESS,
@@ -553,6 +559,9 @@ try:
         "GET /api/v1/crypto-oracle": {
             "description": "NFT collection floor-price oracle: fetches real-time floors via Alchemy and returns risk-aware price forecasts — current floor, historical volatility, drift, and forecast percentiles. Forecasting uses Merton Jump-Diffusion modeling for this crypto-native asset class. Supports any ERC-721 or ERC-1155 contract on Ethereum mainnet.",
             "mimeType": "application/json",
+            "serviceName": "The Undesirables Oracle",
+            "tags": ["nft", "floor-price", "risk-forecast", "ethereum", "erc-721"],
+            "iconUrl": "https://the-undesirables.com/favicon.ico",
             "accepts": {
                 "scheme": "exact",
                 "payTo": PAYMENT_ADDRESS,
@@ -579,6 +588,9 @@ try:
         "GET /api/v1/coin-history": {
             "description": "Historical token price forecaster: fetches OHLC (Open, High, Low, Close) data from CoinGecko and projects forward trajectories with percentile forecasts. Uses Merton Jump-Diffusion modeling for this crypto-native asset class.",
             "mimeType": "application/json",
+            "serviceName": "The Undesirables Oracle",
+            "tags": ["crypto", "price-history", "ohlc", "forecast", "coingecko"],
+            "iconUrl": "https://the-undesirables.com/favicon.ico",
             "accepts": {
                 "scheme": "exact",
                 "payTo": PAYMENT_ADDRESS,
@@ -604,6 +616,9 @@ try:
         "GET /api/v1/arb-cross": {
             "description": "Scan for cross-platform prediction market arbitrage opportunities between Polymarket and Kalshi using Gen3 Neuro-Symbolic NLI matching. Identifies price discrepancies where the same event is priced differently across platforms, creating risk-free edge.",
             "mimeType": "application/json",
+            "serviceName": "The Undesirables Oracle",
+            "tags": ["prediction-markets", "arbitrage", "polymarket", "kalshi", "cross-platform"],
+            "iconUrl": "https://the-undesirables.com/favicon.ico",
             "accepts": {
                 "scheme": "exact",
                 "payTo": PAYMENT_ADDRESS,
@@ -627,6 +642,9 @@ try:
         "GET /api/v1/arb-basket": {
             "description": "Find guaranteed-profit basket arbitrage in prediction markets by aggregating all NO outcomes. When the total cost of buying every NO contract is less than the guaranteed payout, the yield is risk-free.",
             "mimeType": "application/json",
+            "serviceName": "The Undesirables Oracle",
+            "tags": ["prediction-markets", "basket-arbitrage", "guaranteed-profit", "polymarket", "kalshi"],
+            "iconUrl": "https://the-undesirables.com/favicon.ico",
             "accepts": {
                 "scheme": "exact",
                 "payTo": PAYMENT_ADDRESS,
@@ -648,6 +666,9 @@ try:
         "GET /api/v1/arb-weather": {
             "description": "Detect mispriced weather derivatives on Kalshi by comparing live National Weather Service forecast data against current contract pricing. Finds statistical edges in temperature, precipitation, and wind speed markets.",
             "mimeType": "application/json",
+            "serviceName": "The Undesirables Oracle",
+            "tags": ["weather-derivatives", "kalshi", "nws", "arbitrage", "forecast"],
+            "iconUrl": "https://the-undesirables.com/favicon.ico",
             "accepts": {
                 "scheme": "exact",
                 "payTo": PAYMENT_ADDRESS,
@@ -669,6 +690,9 @@ try:
         "GET /api/v1/portfolio-optimize": {
             "description": "Optimize a trading card portfolio with Markowitz mean-variance analysis over conformal-calibrated risk forecasts (Monte Carlo GBM/Merton available opt-in). Provide a list of card names, budget, and risk tolerance (conservative/moderate/aggressive) to receive optimal position sizing, per-card allocation weights, Sharpe ratios, and rebalancing recommendations.",
             "mimeType": "application/json",
+            "serviceName": "The Undesirables Oracle",
+            "tags": ["portfolio-optimization", "markowitz", "mean-variance", "collectibles", "allocation"],
+            "iconUrl": "https://the-undesirables.com/favicon.ico",
             "accepts": {
                 "scheme": "exact",
                 "payTo": PAYMENT_ADDRESS,
@@ -696,6 +720,9 @@ try:
         "GET /api/v1/grade-or-not": {
             "description": "Grade-or-Not Decision Engine: answers 'will grading this trading card make me money?' by combining AI grade prediction with PSA fee schedules, shipping costs, and graded market values to calculate expected ROI. Returns a clear GO/NO-GO verdict with best-case, predicted, and worst-case profit scenarios.",
             "mimeType": "application/json",
+            "serviceName": "The Undesirables Oracle",
+            "tags": ["card-grading", "psa", "expected-value", "decision-engine", "collectibles"],
+            "iconUrl": "https://the-undesirables.com/favicon.ico",
             "accepts": {
                 "scheme": "exact",
                 "payTo": PAYMENT_ADDRESS,
@@ -723,6 +750,9 @@ try:
         "GET /api/v1/trending": {
             "description": "Trending Cards Feed: returns the top trading cards by market activity (30-day sales volume, views, price velocity). Covers all 25 supported TCG games. Useful for autonomous buy/sell agents tracking market momentum and identifying emerging opportunities.",
             "mimeType": "application/json",
+            "serviceName": "The Undesirables Oracle",
+            "tags": ["trending", "market-data", "tcg", "volume", "collectibles"],
+            "iconUrl": "https://the-undesirables.com/favicon.ico",
             "accepts": {
                 "scheme": "exact",
                 "payTo": PAYMENT_ADDRESS,
@@ -748,6 +778,9 @@ try:
         "POST /api/v1/batch-triage": {
             "description": "Batch Card Triage: upload multiple card image URLs and get a profit-ranked grading triage. Each card is graded by AI, then scored by expected ROI from professional grading. Returns a ranked list sorted by highest expected profit first. Perfect for dealers and agents evaluating collections.",
             "mimeType": "application/json",
+            "serviceName": "The Undesirables Oracle",
+            "tags": ["batch-processing", "card-grading", "triage", "bulk", "collectibles"],
+            "iconUrl": "https://the-undesirables.com/favicon.ico",
             # standard exact-scheme shape (the old raw {amount,currency,receiver} dict
             # produced payment requirements no x402 client could match -> unpayable)
             "accepts": {
@@ -775,6 +808,9 @@ try:
         "GET /api/v1/batch-triage": {
             "description": "Batch Card Triage (GET variant): pass comma-separated card image URLs as the image_urls query param and get a profit-ranked grading triage. Each card is AI-graded then scored by expected ROI from professional grading, ranked highest-profit first. Identical to the POST endpoint — this GET form exists so the CDP Bazaar can index it.",
             "mimeType": "application/json",
+            "serviceName": "The Undesirables Oracle",
+            "tags": ["batch-processing", "card-grading", "triage", "bulk", "collectibles"],
+            "iconUrl": "https://the-undesirables.com/favicon.ico",
             "accepts": {
                 "scheme": "exact",
                 "payTo": PAYMENT_ADDRESS,
@@ -800,6 +836,9 @@ try:
         "GET /api/v1/phygital/arbitrage": {
             "description": "Phygital Arbitrage Screener: cross-references Courtyard.io tokenized card listings against TCGPlayer raw prices to find BUY/SELL signals. Covers 267K+ vaulted, insured, tradeable cards on Polygon.",
             "mimeType": "application/json",
+            "serviceName": "The Undesirables Oracle",
+            "tags": ["phygital", "arbitrage", "courtyard", "tcgplayer", "tokenized-collectibles"],
+            "iconUrl": "https://the-undesirables.com/favicon.ico",
             "accepts": {
                 "scheme": "exact",
                 "payTo": PAYMENT_ADDRESS,
@@ -825,6 +864,9 @@ try:
         "GET /api/v1/market": {
             "description": "Daily TCGCSV market data snapshot with top movers, price changes, and volume trends across all 13 supported TCG games.",
             "mimeType": "application/json",
+            "serviceName": "The Undesirables Oracle",
+            "tags": ["market-data", "daily-snapshot", "tcg", "top-movers", "collectibles"],
+            "iconUrl": "https://the-undesirables.com/favicon.ico",
             "accepts": {
                 "scheme": "exact",
                 "payTo": PAYMENT_ADDRESS,
