@@ -32,11 +32,15 @@ An x402 micropayment-gated API providing **financial intelligence for the $50B+ 
 https://mcp.the-undesirables.com
 ```
 
-No install, no account, no API key. **10 tools** over streamable HTTP (MCP protocol
+No install, no account, no API key. **12 tools** over streamable HTTP (MCP protocol
 `2025-06-18`; legacy SSE also served). Free tools answer immediately. Paid tools return an
 x402 `payment_required` carrying amount, network, and `payTo` — an agent with a funded
 wallet can settle and retry in the same session. Settlement only occurs on a successful
 response; failed calls are never charged.
+
+Holders can also ask **which Undesirables a wallet owns** and how each soul's calls have
+scored (`souls_in_wallet`, `soul_calls`) — public track record only; personalities stay
+holder-gated.
 
 **Claude Desktop / Perplexity** — add it as a custom remote connector (Perplexity:
 Settings → Connectors → + Custom Connector → Remote).
