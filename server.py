@@ -1813,8 +1813,9 @@ async def agent_card():
         "name": "The Undesirables TCG Oracle",
         "description": (
             "AI-powered TCG card grading, conformal risk forecasting, "
-            "and market intelligence. 370K+ products across 25 games. "
-            "28 API endpoints. Pay-per-call via x402 USDC on Base."
+            "and market intelligence. 446K+ products across 25+ games. "
+            "31 API endpoints. Pay-per-call via x402 USDC on Base. "
+            "Hosted MCP endpoint: https://mcp.the-undesirables.com"
         ),
         "url": os.getenv("X402_PUBLIC_URL", "https://oracle.the-undesirables.com"),
         "version": "2.0.0",
@@ -1856,9 +1857,9 @@ async def agent_card():
             },
             {
                 "id": "simulate_price",
-                "name": "Monte Carlo Simulation",
+                "name": "Conformal-Calibrated Price Forecast",
                 "description": "Conformal-calibrated risk forecasts with honest VaR + Safe-Hold/Momentum grades (Monte Carlo GBM/Merton opt-in). $0.015 USDC.",
-                "tags": ["simulation", "monte-carlo", "finance", "paid"],
+                "tags": ["conformal", "risk-forecast", "var", "monte-carlo", "finance", "paid"],
             },
             {
                 "id": "trending",
