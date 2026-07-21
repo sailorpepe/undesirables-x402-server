@@ -3671,27 +3671,43 @@ async def simulate_price(
     simulations: int = Query(10000, ge=100, le=100000, description="Number of Monte Carlo paths"),
 ):
     """
-    💰 **$0.015 USDC** — Monte Carlo Price Simulation.
-    
-    Runs vectorized stochastic simulations using numpy.
-    
-    Models:
+    💰 **$0.015 USDC** — Conformal-Calibrated Price Forecast.
+
+    **Default model: `conformal`** — a deterministic drift point forecast wrapped
+    in regime-aware split-conformal bands fit on real holdout residuals, with
+    honest VaR/CVaR. Coverage is *measured out-of-sample nightly*, not assumed:
+    a "5% downside" happens about 5% of the time. Cards are bucketed
+    calm/medium/jumpy by volatility, so a jumpy card gets honestly wider bands.
+    Deterministic and reproducible — the same inputs give the same number.
+
+    Monte Carlo remains available **opt-in** via `model=`:
+    - **merton**: Merton Jump-Diffusion — GBM + Poisson jumps (sudden events:
+      buyouts, influencer videos, ban lists)
     - **gbm**: Geometric Brownian Motion — standard log-normal diffusion
-    - **merton**: Merton Jump-Diffusion — GBM + Poisson-driven price jumps
-      (jumps model sudden events: buyouts, influencer videos, ban lists)
-    
+
     Returns percentile bands (5th, 25th, 50th, 75th, 95th) plus risk metrics
-    (VaR_95, CVaR_95 / Expected Shortfall).
+    (VaR_95, CVaR_95 / Expected Shortfall) and Safe-Hold / Momentum letter grades.
     
     Returns `402 Payment Required` — sign USDC payment on Base to access.
     """
     import numpy as np
     import math
 
-    # Conformal-calibrated path (deterministic, honest VaR) — the Round-5 winner. Opt-in for now via
-    # model=conformal; becomes the default once the nightly calibration offsets are validated live.
+    # Conformal-calibrated path (deterministic, honest VaR) — this is now the
+    # DEFAULT (see the `model` query param), not opt-in: the nightly calibration
+    # offsets have been validated live since 2026-07, and AgACI + NexCP layer on
+    # top of them. Monte Carlo (merton/gbm) is the opt-in alternative below.
+    # `tool` previously said "monte_carlo" on this branch, which is simply
+    # wrong — it labelled a conformal forecast as Monte Carlo and contradicted
+    # the framing we publish everywhere else. Renaming a response VALUE brushes
+    # against the add-only rule, so: verified no consumer matches on it (only
+    # the 402-guidance body is read downstream) and there are currently zero
+    # organic paid callers, so nothing in the wild can break. `model` is added
+    # alongside so the answer is self-describing either way.
     if model == "conformal":
-        return {"status": "ok", "tool": "monte_carlo", "price": "$0.015", "data": _conformal_forecast(card_name, current_price, days)}
+        return {"status": "ok", "tool": "conformal_forecast", "model": "conformal",
+                "price": "$0.015",
+                "data": _conformal_forecast(card_name, current_price, days)}
 
     # Try to get calibrated parameters from the MCP data layer
     calibrated = _get_calibrated_params(card_name)
