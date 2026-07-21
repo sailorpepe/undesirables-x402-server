@@ -3593,23 +3593,37 @@ async def _tokens_for_owner(address: str) -> list[int]:
     key = os.getenv("ALCHEMY_API_KEY")
     if not key:
         raise HTTPException(status_code=503, detail="ownership lookup unavailable")
-    url = (f"https://eth-mainnet.g.alchemy.com/nft/v3/{key}/getNFTsForOwner"
-           f"?owner={address}&contractAddresses[]={SOUL_CONTRACT}"
-           f"&withMetadata=false&pageSize=100")
+    # FOLLOW pageKey. Alchemy caps a page at 100 and hands back a cursor; a
+    # single unpaged call silently drops everything past the first page — the
+    # holder just sees fewer souls than they own and has no reason to report it.
+    # Measured 2026-07-21: 61 holders / 273 tokens, and the largest wallet holds
+    # 99 — ONE token short of truncating, on the owner/deployer address with
+    # 4,171 still unminted. So this was days from breaking quietly, not
+    # hypothetical. Loop is bounded: 273 minted / 100 per page = 3 pages max,
+    # and the guard stops runaway cursors regardless.
+    base = (f"https://eth-mainnet.g.alchemy.com/nft/v3/{key}/getNFTsForOwner"
+            f"?owner={address}&contractAddresses[]={SOUL_CONTRACT}"
+            f"&withMetadata=false&pageSize=100")
+    out, page_key, pages = [], None, 0
     async with httpx.AsyncClient(timeout=20.0) as client:
-        resp = await client.get(url)
-    if resp.status_code != 200:
-        logging.error(f"Alchemy ownership lookup {resp.status_code}: {resp.text[:200]}")
-        raise HTTPException(status_code=502, detail="ownership lookup failed upstream")
-    out = []
-    for nft in resp.json().get("ownedNfts", []):
-        try:
-            tid = int(nft.get("tokenId"))
-        except (TypeError, ValueError):
-            continue
-        if 1 <= tid <= 273:
-            out.append(tid)
-    return sorted(out)
+        while pages < 10:
+            resp = await client.get(base + (f"&pageKey={page_key}" if page_key else ""))
+            if resp.status_code != 200:
+                logging.error(f"Alchemy ownership lookup {resp.status_code}: {resp.text[:200]}")
+                raise HTTPException(status_code=502, detail="ownership lookup failed upstream")
+            body = resp.json()
+            for nft in body.get("ownedNfts", []):
+                try:
+                    tid = int(nft.get("tokenId"))
+                except (TypeError, ValueError):
+                    continue
+                if 1 <= tid <= 273:
+                    out.append(tid)
+            page_key = body.get("pageKey")
+            pages += 1
+            if not page_key:
+                break
+    return sorted(set(out))
 
 
 @app.get("/api/v1/soul-rating/wallet/{address}", tags=["Free"])
