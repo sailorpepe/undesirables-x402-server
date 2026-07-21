@@ -3584,6 +3584,105 @@ def soul_leaderboard(request: Request):
         db.close()
 
 
+SOUL_CONTRACT = "0xA893648A701C03B14bF2FB767B72b2C55ed5c17A"
+
+
+async def _tokens_for_owner(address: str) -> list[int]:
+    """Undesirables token IDs held by an address, via Alchemy. Read-only public
+    chain data — no signature or payment needed to ask about any wallet."""
+    key = os.getenv("ALCHEMY_API_KEY")
+    if not key:
+        raise HTTPException(status_code=503, detail="ownership lookup unavailable")
+    url = (f"https://eth-mainnet.g.alchemy.com/nft/v3/{key}/getNFTsForOwner"
+           f"?owner={address}&contractAddresses[]={SOUL_CONTRACT}"
+           f"&withMetadata=false&pageSize=100")
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        resp = await client.get(url)
+    if resp.status_code != 200:
+        logging.error(f"Alchemy ownership lookup {resp.status_code}: {resp.text[:200]}")
+        raise HTTPException(status_code=502, detail="ownership lookup failed upstream")
+    out = []
+    for nft in resp.json().get("ownedNfts", []):
+        try:
+            tid = int(nft.get("tokenId"))
+        except (TypeError, ValueError):
+            continue
+        if 1 <= tid <= 273:
+            out.append(tid)
+    return sorted(out)
+
+
+@app.get("/api/v1/soul-rating/wallet/{address}", tags=["Free"])
+@limiter.limit("30/minute")
+async def soul_rating_wallet(request: Request, address: str, calls: int = 5):
+    """🆓 FREE — every soul a wallet holds, with each one's public track record and
+    its most recent calls. Public data end to end: ownership is read from chain and
+    the ratings are already public, so this needs no signature and no payment."""
+    if not re.fullmatch(r"0x[a-fA-F0-9]{40}", address or ""):
+        raise HTTPException(status_code=400, detail="address must be a 0x-prefixed 40-hex-char EVM address")
+    calls = max(0, min(calls, 12))
+    token_ids = await _tokens_for_owner(address)
+    if not token_ids:
+        return {"status": "ok", "address": address, "souls_held": 0, "souls": [],
+                "note": ("No minted Undesirables (1-273) found at this address. Souls are "
+                         "ERC-721 on Ethereum mainnet at " + SOUL_CONTRACT + ".")}
+
+    db = _souls_db()
+    if not db:
+        raise HTTPException(status_code=503, detail="soul ratings not initialized")
+    try:
+        souls, tot_matured, tot_hits, tot_open = [], 0, 0, 0
+        for tid in token_ids:
+            agg = db.execute("SELECT matured, hits, pushes, hit_rate, brier, rating FROM soul_ratings "
+                             "WHERE token_id=?", (tid,)).fetchone()
+            n_open = db.execute("SELECT COUNT(*) FROM soul_predictions WHERE token_id=? AND scored=0",
+                                (tid,)).fetchone()[0]
+            recent = db.execute(
+                "SELECT name, direction, as_of, move_pct, hit, push FROM soul_predictions "
+                "WHERE token_id=? AND scored=1 ORDER BY as_of DESC, product_id LIMIT ?",
+                (tid, calls)).fetchall() if calls else []
+            tot_matured += (agg[0] if agg else 0)
+            tot_hits += (agg[1] if agg else 0)
+            tot_open += n_open
+            souls.append({
+                "token_id": tid,
+                "rating": agg[5] if agg else "UNRATED",
+                "matured": agg[0] if agg else 0,
+                "hits": agg[1] if agg else 0,
+                "pushes": agg[2] if agg else 0,
+                "hit_rate": agg[3] if agg else None,
+                "brier": agg[4] if agg else None,
+                "open_calls": n_open,
+                "recent_calls": [{"name": r[0], "direction": r[1], "as_of": r[2], "move_pct": r[3],
+                                  "outcome": ("push" if r[5] else ("hit" if r[4] else "miss"))}
+                                 for r in recent],
+                "detail": f"/api/v1/soul-rating/{tid}",
+            })
+        # best soul = highest hit_rate among those with any matured calls; None until Jul 31
+        ranked = [s for s in souls if s["matured"]]
+        best = max(ranked, key=lambda s: (s["hit_rate"] or 0)) if ranked else None
+        return {
+            "status": "ok",
+            "address": address,
+            "souls_held": len(souls),
+            "souls": souls,
+            "wallet_totals": {
+                "open_calls": tot_open,
+                "matured_calls": tot_matured,
+                "hits": tot_hits,
+                "hit_rate": round(tot_hits / tot_matured, 4) if tot_matured else None,
+            },
+            "best_soul": {"token_id": best["token_id"], "rating": best["rating"],
+                          "hit_rate": best["hit_rate"]} if best else None,
+            "methodology_note": _SOULS_METHOD,
+            "verify": ("Every call above was merkle-committed on-chain BEFORE its outcome — "
+                       "see /api/v1/soul-rating/{token_id} for each call's lock_hash and the "
+                       "week's committed root + tx."),
+        }
+    finally:
+        db.close()
+
+
 @app.get("/api/v1/soul-rating/{token_id}", tags=["Free"])
 @limiter.limit("60/minute")
 def soul_rating(request: Request, token_id: int):
