@@ -2177,6 +2177,65 @@ def search_tcg_products(
                 )
         rows = cur.fetchall()
 
+        # Set-qualified fallback (2026-07-21): FTS5 implicitly ANDs every token
+        # against the card NAME, so natural queries that include a SET — "Base
+        # Set Charizard Holo", "Charizard Base Set" — matched nothing at all,
+        # while "charizard" and even "Pikachu VMAX" worked fine. Surfaced by the
+        # hosted-MCP acceptance test, where search is the FIRST tool any agent
+        # or developer reaches for; returning zero there reads as "no data".
+        # On an empty result for a multi-token query, retry OR-ed and ranked by
+        # bm25 so cards matching the MOST tokens come first. Purely additive:
+        # queries that already return rows never reach this path.
+        if not rows:
+            tokens = [t for t in re.findall(r"[A-Za-z0-9]+", query) if len(t) > 1]
+            if len(tokens) > 1:
+                try:
+                    # Use the LONGEST token, not an OR of all of them. The cards
+                    # table has no set/group column (only name/clean_name are
+                    # indexed), so a set qualifier can never be honoured — and
+                    # OR-ing lets generic words win: "Base Set Charizard Holo"
+                    # ranked "Pikachu (Base Set)" first, because that name
+                    # matches base+set densely while no card is named
+                    # "Charizard (Base Set)". Confidently returning the wrong
+                    # card is worse than returning none, since an agent takes it
+                    # as the answer instead of retrying. Longest token is a good
+                    # proxy for the actual card name ("charizard" over
+                    # base/set/holo) and keeps the result precise.
+                    or_expr = max(tokens, key=len)
+                    if cat_id:
+                        cur.execute(
+                            """
+                            SELECT DISTINCT c.product_id, c.name, c.clean_name, c.category_id,
+                                   p.market_price, p.low_price, p.mid_price, p.date
+                            FROM cards_fts fts
+                            JOIN cards c ON c.rowid = fts.rowid
+                            LEFT JOIN price_history p ON c.product_id = p.product_id
+                                AND p.date = ?
+                            WHERE cards_fts MATCH ? AND c.category_id = ?
+                            ORDER BY bm25(cards_fts), COALESCE(p.market_price, 0) DESC
+                            LIMIT ?
+                            """,
+                            (max_date, or_expr, cat_id, limit),
+                        )
+                    else:
+                        cur.execute(
+                            """
+                            SELECT DISTINCT c.product_id, c.name, c.clean_name, c.category_id,
+                                   p.market_price, p.low_price, p.mid_price, p.date
+                            FROM cards_fts fts
+                            JOIN cards c ON c.rowid = fts.rowid
+                            LEFT JOIN price_history p ON c.product_id = p.product_id
+                                AND p.date = ?
+                            WHERE cards_fts MATCH ?
+                            ORDER BY bm25(cards_fts), COALESCE(p.market_price, 0) DESC
+                            LIMIT ?
+                            """,
+                            (max_date, or_expr, limit),
+                        )
+                    rows = cur.fetchall()
+                except Exception:
+                    pass                      # keep the empty result on any failure
+
         # Check if internal caller
         ua = request.headers.get("user-agent", "")
         is_internal = "TheUndesirables-Site" in ua
