@@ -1111,22 +1111,41 @@ async def root():
     }
 
 
+_HEALTH_STATS_CACHE = {"at": 0.0, "data": None}
+_HEALTH_STATS_TTL = 300  # 5 min — these counts move once a night
+
+
 @app.get("/health", tags=["Info"])
 async def health():
-    """Health check with database statistics."""
+    """Health check with database statistics.
+
+    The stats are CACHED (5 min): `SELECT COUNT(*)` over price_history (27.8M+
+    rows and growing) took ~15s on a cold page cache, which pushed /health past
+    the stack healthcheck's 10s timeout and cried wolf after every restart
+    (2026-07-21). A health endpoint must answer fast even when the DB is cold —
+    liveness is reported immediately and the counts fill in from cache."""
+    import time as _t
     result = {"status": "ok", "x402": X402_ENABLED}
+
+    now = _t.time()
+    cached = _HEALTH_STATS_CACHE["data"]
+    if cached and (now - _HEALTH_STATS_CACHE["at"]) < _HEALTH_STATS_TTL:
+        result.update(cached)
+        return result
 
     db = _get_db()
     if db:
         try:
-            cards = db.execute("SELECT COUNT(*) FROM cards").fetchone()[0]
-            prices = db.execute("SELECT COUNT(*) FROM price_history").fetchone()[0]
-            latest = db.execute("SELECT MAX(date) FROM price_history").fetchone()[0]
-            result["total_cards"] = cards
-            result["total_prices"] = prices
-            result["latest_date"] = latest
+            stats = {
+                "total_cards": db.execute("SELECT COUNT(*) FROM cards").fetchone()[0],
+                "total_prices": db.execute("SELECT COUNT(*) FROM price_history").fetchone()[0],
+                "latest_date": db.execute("SELECT MAX(date) FROM price_history").fetchone()[0],
+            }
+            _HEALTH_STATS_CACHE.update({"at": now, "data": stats})
+            result.update(stats)
         except Exception:
-            pass
+            if cached:                      # serve stale rather than omit
+                result.update(cached)
         finally:
             db.close()
 
