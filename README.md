@@ -26,8 +26,44 @@ An x402 micropayment-gated API providing **financial intelligence for the $50B+ 
 
 ---
 
+## 🔌 Connect over MCP — one URL, no install
+
+```
+https://mcp.the-undesirables.com
+```
+
+No install, no account, no API key. **10 tools** over streamable HTTP (MCP protocol
+`2025-06-18`; legacy SSE also served). Free tools answer immediately. Paid tools return an
+x402 `payment_required` carrying amount, network, and `payTo` — an agent with a funded
+wallet can settle and retry in the same session. Settlement only occurs on a successful
+response; failed calls are never charged.
+
+**Claude Desktop / Perplexity** — add it as a custom remote connector (Perplexity:
+Settings → Connectors → + Custom Connector → Remote).
+
+**Cursor / Windsurf / VS Code** — clients that take a URL in config:
+
+```json
+{
+  "mcpServers": {
+    "tcg-oracle": { "url": "https://mcp.the-undesirables.com" }
+  }
+}
+```
+
+Tools: `search_tcg_products`, `market_snapshot`, `grade_card`, `grade_or_not`,
+`simulate_price`, `card_forecast`, `trending_cards`, `optimize_portfolio`,
+`recommend_workflow`, `check_accuracy`.
+
+Search is set-aware — `search_tcg_products("Base Set Charizard")` separates Base Set,
+Base Set 2, and Shadowless rather than returning every Charizard printing. Every result
+carries a `set` field and a `product_id` you can pass straight to the other tools.
+
+---
+
 ## Table of Contents
 
+- [Connect over MCP](#-connect-over-mcp--one-url-no-install)
 - [Why This Exists](#-why-this-exists)
 - [Quick Start](#-quick-start)
 - [API Endpoints](#-api-endpoints)
