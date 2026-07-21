@@ -2117,7 +2117,7 @@ def search_tcg_products(
                 cur.execute(
                     """
                     SELECT DISTINCT c.product_id, c.name, c.clean_name, c.category_id,
-                           p.market_price, p.low_price, p.mid_price, p.date
+                           p.market_price, p.low_price, p.mid_price, p.date, c.group_name
                     FROM cards_fts fts
                     JOIN cards c ON c.rowid = fts.rowid
                     LEFT JOIN price_history p ON c.product_id = p.product_id
@@ -2133,7 +2133,7 @@ def search_tcg_products(
                 cur.execute(
                     """
                     SELECT DISTINCT c.product_id, c.name, c.clean_name, c.category_id,
-                           p.market_price, p.low_price, p.mid_price, p.date
+                           p.market_price, p.low_price, p.mid_price, p.date, c.group_name
                     FROM cards_fts fts
                     JOIN cards c ON c.rowid = fts.rowid
                     LEFT JOIN price_history p ON c.product_id = p.product_id
@@ -2150,7 +2150,7 @@ def search_tcg_products(
                 cur.execute(
                     """
                     SELECT DISTINCT c.product_id, c.name, c.clean_name, c.category_id,
-                           p.market_price, p.low_price, p.mid_price, p.date
+                           p.market_price, p.low_price, p.mid_price, p.date, c.group_name
                     FROM cards c
                     LEFT JOIN price_history p ON c.product_id = p.product_id
                         AND p.date = ?
@@ -2165,7 +2165,7 @@ def search_tcg_products(
                 cur.execute(
                     """
                     SELECT DISTINCT c.product_id, c.name, c.clean_name, c.category_id,
-                           p.market_price, p.low_price, p.mid_price, p.date
+                           p.market_price, p.low_price, p.mid_price, p.date, c.group_name
                     FROM cards c
                     LEFT JOIN price_history p ON c.product_id = p.product_id
                         AND p.date = ?
@@ -2206,7 +2206,7 @@ def search_tcg_products(
                         cur.execute(
                             """
                             SELECT DISTINCT c.product_id, c.name, c.clean_name, c.category_id,
-                                   p.market_price, p.low_price, p.mid_price, p.date
+                                   p.market_price, p.low_price, p.mid_price, p.date, c.group_name
                             FROM cards_fts fts
                             JOIN cards c ON c.rowid = fts.rowid
                             LEFT JOIN price_history p ON c.product_id = p.product_id
@@ -2221,7 +2221,7 @@ def search_tcg_products(
                         cur.execute(
                             """
                             SELECT DISTINCT c.product_id, c.name, c.clean_name, c.category_id,
-                                   p.market_price, p.low_price, p.mid_price, p.date
+                                   p.market_price, p.low_price, p.mid_price, p.date, c.group_name
                             FROM cards_fts fts
                             JOIN cards c ON c.rowid = fts.rowid
                             LEFT JOIN price_history p ON c.product_id = p.product_id
@@ -2269,6 +2269,11 @@ def search_tcg_products(
                 item = {
                     "product_id": r[0],
                     "name": r[1] or r[2],
+                    # The SET is what distinguishes printings — a "Charizard" is
+                    # worthless information without it (Base Set vs Base Set 2 vs
+                    # Shadowless are wildly different cards). Added 2026-07-21
+                    # with the group_id/group_name backfill.
+                    "set": r[8] if len(r) > 8 else None,
                 }
                 if is_widget:
                     cat_id = r[3]
@@ -2283,17 +2288,16 @@ def search_tcg_products(
                 "note": "Free tier shows top results without pricing. Use paid endpoints for full data." if not is_widget else None,
                 "data": {"results": limited},
             }
-            # Tell the caller HOW to search when we came up empty, instead of
-            # leaving an agent to guess. Matching is on the card NAME only —
-            # there is no set/group column — so set-qualified queries look
-            # broken unless we say so. Agents observably retry on this hint.
+            # Tell the caller HOW to search when we came up empty rather than
+            # leaving an agent to guess. Card names AND set names are both
+            # searchable (set backfilled 2026-07-21); rarity words like "Holo"
+            # are not indexed and will sink an otherwise-good query.
             if not is_widget and not limited:
                 payload["search_tip"] = (
-                    "No matches. This catalog searches the CARD NAME only — set and "
-                    "edition words ('Base Set', '1st Edition', 'Holo') are not searchable. "
-                    "Retry with just the card name, e.g. 'Charizard' instead of "
-                    "'Base Set Charizard Holo', then pick the printing you want from the "
-                    "results by product_id."
+                    "No matches. Searchable text is the CARD NAME and the SET NAME — "
+                    "e.g. 'Charizard' or 'Base Set Charizard'. Rarity/condition words "
+                    "('Holo', '1st Edition', 'Shadowless') are NOT indexed, so drop them "
+                    "and pick the printing you want from the 'set' field in the results."
                 )
             return payload
     finally:
