@@ -1457,9 +1457,27 @@ async def collection_prepare_mint(
 used_casper_tx_hashes = set()
 CASPER_CONTRACT_HASH = "0235f90c8dac5ecb30011672fc60ce1e98d51c5adfb5c019f44622bfb344bd77"
 
-@app.get("/api/v1/casper/price", tags=["Casper x402"])
+@app.get("/api/v1/casper/price", tags=["Casper x402"], include_in_schema=False)
 @limiter.limit("60/minute")
-async def casper_price_search(
+async def casper_price_retired(request: Request):
+    """RETIRED 2026-07-21 — we no longer control the Casper deployment, so we stop
+    selling access to it. It never took an organic payment (203 requests, 1 success,
+    which was our own end-to-end test on 2026-07-18) and it was never in the Bazaar
+    index, so there is nothing to delist and no customer to strand.
+
+    410 Gone, not 404: agents treat 410 as permanent and stop retrying, and it is
+    honest — this existed and was withdrawn. Removed from the OpenAPI schema so it
+    stops being discoverable. The implementation below is kept, unreachable, so the
+    Merkle-proof + deploy-verification work is recoverable if Casper ever returns."""
+    raise HTTPException(
+        status_code=410,
+        detail=("This endpoint is retired. The Casper deployment is no longer maintained, "
+                "so we no longer accept CSPR payments for it. Use GET /api/v1/search (free) "
+                "or the x402 USDC-on-Base endpoints — see https://oracle.the-undesirables.com/docs"),
+    )
+
+
+async def _casper_price_search_retired_impl(
     request: Request,
     query: str = Query(None, description="Card name to search for"),
     product_id: Optional[int] = Query(None, description="TCGPlayer product ID (direct lookup)"),
