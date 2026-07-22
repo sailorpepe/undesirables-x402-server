@@ -2,16 +2,16 @@
 
 <img src="assets/banner.png" alt="TCG Oracle Banner" width="100%" />
 
-An x402 micropayment-gated API providing **financial intelligence for the $50B+ trading card market**. AI agents discover this server on the [x402 Bazaar](https://docs.cdp.coinbase.com/x402/bazaar), pay per-call with USDC on Base or CSPR on Casper Testnet, and receive institutional-grade analytics with **full model transparency**.
+An x402 micropayment-gated API providing **financial intelligence for the $50B+ trading card market**. AI agents discover this server on the [x402 Bazaar](https://docs.cdp.coinbase.com/x402/bazaar), pay per-call with USDC on Base, and receive institutional-grade analytics with **full model transparency**.
 
 # ⚡ TCG Oracle — AI Card Grading & Market Data
 
-**31 AI endpoints (14 paid via x402) · USDC micropayments on Base · Conformal-calibrated risk forecasts · AI card grading**
+**30 AI endpoints (13 paid via x402) · USDC micropayments on Base · Conformal-calibrated risk forecasts · AI card grading**
 
 ![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white)
 ![License: BSL-1.1](https://img.shields.io/badge/License-BSL_1.1-red?style=flat-square)
 ![x402](https://img.shields.io/badge/Protocol-x402-00dcff?style=flat-square)
-![Endpoints](https://img.shields.io/badge/Endpoints-31-ff14a0?style=flat-square)
+![Endpoints](https://img.shields.io/badge/Endpoints-30-ff14a0?style=flat-square)
 ![Base Network](https://img.shields.io/badge/Chain-Base_(L2)-0052FF?style=flat-square&logo=coinbase&logoColor=white)
 
 [API Docs](https://the-undesirables.com/docs) · [Live Terminal](https://the-undesirables.com/terminal) · [API Terms](https://the-undesirables.com/api-terms)
@@ -142,7 +142,7 @@ The server automatically registers its JSON schemas with the Coinbase CDP Facili
 
 ## 🔌 API Endpoints
 
-### 31 Endpoints (14 Paid, 17 Free)
+### 30 Endpoints (13 Paid, 17 Free)
 
 #### 💰 Financial Intelligence (Paid)
 
@@ -156,7 +156,6 @@ The server automatically registers its JSON schemas with the Coinbase CDP Facili
 | `GET /api/v1/portfolio-optimize` | **$0.50** | "How should I allocate my budget?" — Markowitz mean-variance + Merton Jump-Diffusion |
 | `GET /api/v1/crypto-oracle` | **$0.05** | "What's this NFT collection worth?" — Alchemy floor + Merton Jump-Diffusion |
 | `GET /api/v1/coin-history` | **$0.05** | "Where is this token going?" — CoinGecko OHLC + Monte Carlo |
-| `GET /api/v1/casper/price` | **1 CSPR** | "What is the verified price of this card?" — Native Casper integration for the Agentic Buildathon. Verifies CSPR transfers via custom local x402 middleware and pulls pricing from the Merkle Oracle. |
 | `GET /api/v1/arb-cross` | **$1.00** | "Any cross-platform prediction market edges?" — Polymarket vs Kalshi NLI |
 | `GET /api/v1/arb-basket` | **$0.50** | "Any guaranteed-profit basket arbs?" — Multi-outcome NO aggregation |
 | `GET /api/v1/arb-weather` | **$0.25** | "Any mispriced weather derivatives?" — NWS vs Kalshi |
