@@ -205,14 +205,31 @@ def main():
     # ── Push root on-chain ──
     log.info("Root changed — pushing on-chain...")
     oracle = w3.eth.contract(address=contract_addr, abi=abi)
-    nonce = w3.eth.get_transaction_count(wallet)
-    tx = oracle.functions.updateMerkleRoot(root, len(entries)).build_transaction({
-        "chainId": CHAIN, "from": wallet, "nonce": nonce,
-        "gas": 200000, "gasPrice": w3.eth.gas_price,
-    })
-    signed = w3.eth.account.sign_transaction(tx, pk)
-    h = w3.eth.send_raw_transaction(getattr(signed, "raw_transaction", None) or signed.rawTransaction)
-    log.info(f"TX: {h.hex()}")
+    # 3x gas buffer + retry — same fix as litvm_updater_v2 and soul_predictions.
+    # On 2026-07-22 the 06:34 push logged "Root changed — pushing on-chain..."
+    # and never completed; the log jumps straight to the 07:34 run. Bare
+    # w3.eth.gas_price is read before signing, so a LiteForge base-fee tick in
+    # between rejects the send. It self-heals next hour, but it pages David in
+    # the meantime, and a log that stops mid-push is indistinguishable from a
+    # hang — which is why this one looked worse than it was.
+    last_err = None
+    for mult in (3, 6, 12):
+        try:
+            tx = oracle.functions.updateMerkleRoot(root, len(entries)).build_transaction({
+                "chainId": CHAIN, "from": wallet,
+                "nonce": w3.eth.get_transaction_count(wallet),
+                "gas": 200000, "gasPrice": int(w3.eth.gas_price * mult),
+            })
+            signed = w3.eth.account.sign_transaction(tx, pk)
+            h = w3.eth.send_raw_transaction(getattr(signed, "raw_transaction", None) or signed.rawTransaction)
+            log.info(f"TX: {h.hex()} ({mult}x gas)")
+            break
+        except Exception as e:
+            last_err = e
+            log.warning(f"gas attempt {mult}x failed: {str(e)[:110]}")
+    else:
+        log.error(f"Root push FAILED after 3 gas attempts: {last_err}")
+        sys.exit(1)
     receipt = w3.eth.wait_for_transaction_receipt(h, timeout=120)
 
     if receipt.status != 1:

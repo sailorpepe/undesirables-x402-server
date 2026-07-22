@@ -90,14 +90,30 @@ def main():
     print(f"  Data date: {data_date}")
     print(f"  Contract:  {contract_address}")
 
-    nonce = w3.eth.get_transaction_count(wallet)
-    tx = oracle.functions.batchUpdatePricesOnly(ids, prices, lows).build_transaction({
-        "chainId": CHAIN_ID, "from": wallet, "nonce": nonce,
-        "gas": 5000000, "gasPrice": w3.eth.gas_price,
-    })
-    signed = w3.eth.account.sign_transaction(tx, private_key)
-    tx_hash = w3.eth.send_raw_transaction(getattr(signed, "raw_transaction", None) or signed.rawTransaction)
-    print(f"  TX sent:   {tx_hash.hex()}")
+    # 3x gas buffer + retry. Bare w3.eth.gas_price is fetched BEFORE signing, so a
+    # LiteForge base-fee tick between fetch and send kills the push outright:
+    #   "max fee per gas less than block base fee: maxFee 10112000, base 10133000"
+    # — off by 0.2%, and it paged David at 07:00 on 2026-07-22. Same failure class
+    # that stranded a weekly soul root on 2026-07-19 (fixed there the same way).
+    # The push self-heals next hour, but a page for a transient blip is the real
+    # cost: alert fatigue is how a genuine outage gets ignored.
+    last_err = None
+    for mult in (3, 6, 12):
+        try:
+            tx = oracle.functions.batchUpdatePricesOnly(ids, prices, lows).build_transaction({
+                "chainId": CHAIN_ID, "from": wallet,
+                "nonce": w3.eth.get_transaction_count(wallet),
+                "gas": 5000000, "gasPrice": int(w3.eth.gas_price * mult),
+            })
+            signed = w3.eth.account.sign_transaction(tx, private_key)
+            tx_hash = w3.eth.send_raw_transaction(getattr(signed, "raw_transaction", None) or signed.rawTransaction)
+            print(f"  TX sent:   {tx_hash.hex()} ({mult}x gas)")
+            break
+        except Exception as e:
+            last_err = e
+            print(f"  gas attempt {mult}x failed: {str(e)[:110]}")
+    else:
+        raise RuntimeError(f"LitVM price push failed after 3 gas attempts: {last_err}")
 
     receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
     if receipt.status == 1:
