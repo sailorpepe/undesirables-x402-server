@@ -1062,12 +1062,15 @@ except Exception as e:
 @app.get("/", tags=["Info"])
 async def root():
     """Server info and available endpoints."""
-    return {
+    # total_endpoints and the card count are COUNTED, never asserted. The literal
+    # 27 sat here while the real number moved to 30 and then 29 (Casper retired
+    # 2026-07-21) — a hand-maintained number is wrong the moment anyone ships.
+    # Same reason the MCP landing page counts its tool registry and stopped
+    # going stale. If a published number can be derived, derive it.
+    _payload = {
         "name": "TCG Oracle — Financial Intelligence for Collectibles",
-        "tagline": "Conformal risk forecasts, AI grading, and Safe-Hold/Momentum card grades for 446K+ trading cards across 25+ games",
         "version": "2.0.0",
         "x402_enabled": X402_ENABLED,
-        "total_endpoints": 27,
         "payment_address": PAYMENT_ADDRESS,
         "network": NETWORK,
         "endpoints": {
@@ -1109,6 +1112,23 @@ async def root():
         },
         "website": "https://the-undesirables.vercel.app",
     }
+    # Derive the advertised counts from the payload itself and from the live DB,
+    # so /?  can never disagree with what the server actually serves.
+    _free = len(_payload["endpoints"]["free"])
+    _paid = len(_payload["endpoints"]["paid"])
+    _payload["total_endpoints"] = _free + _paid
+    _payload["paid_endpoints"] = _paid
+    _payload["free_endpoints"] = _free
+    _cards = (_HEALTH_STATS_CACHE.get("data") or {}).get("total_cards")
+    if _cards:
+        _payload["total_products"] = _cards
+        _payload["tagline"] = (
+            f"Conformal risk forecasts, AI grading, and Safe-Hold/Momentum card grades "
+            f"for {_cards // 1000}K+ trading cards across 25+ games")
+    else:
+        _payload["tagline"] = ("Conformal risk forecasts, AI grading, and Safe-Hold/Momentum "
+                               "card grades for 446K+ trading cards across 25+ games")
+    return _payload
 
 
 _HEALTH_STATS_CACHE = {"at": 0.0, "data": None}
