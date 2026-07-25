@@ -5135,10 +5135,20 @@ async def phygital_arbitrage(
                 "status": "ok",
                 "screener": "Phygital Arbitrage (Verified)",
                 "description": "Courtyard.io NFTs vs TCGPlayer — matched by set name + card number + grade-adjusted pricing",
+                # NOTE (2026-07-24): this whole `verified_path.exists()` branch is
+                # currently DEAD — tcg-oracle-tools/data/verified_arbitrage.json does
+                # not exist and no builder for it is present, so every request falls
+                # through to the live-DB path below. It has therefore never been
+                # served to a caller. The methodology block used to claim
+                # "verification via pokemontcg.io API" — we have never called
+                # pokemontcg.io anywhere in this codebase, so that would have been a
+                # false claim the moment anyone regenerated the file. Corrected to
+                # describe what the precomputed set actually is; if the pokemontcg.io
+                # cross-reference is ever built, update this to match reality then.
                 "methodology": {
-                    "matching": "Exact set name + card number verification via pokemontcg.io API",
+                    "matching": "Precomputed set-name + card-number pairing from the verified arbitrage set",
                     "pricing": "TCGPlayer raw price × grade multiplier (PSA 10=8x, 9=3x, 8.5=2x, 8=1.5x)",
-                    "source": "OpenSea listings → Alchemy metadata → pokemontcg.io cross-reference",
+                    "source": "Courtyard.io tokenized listings cross-referenced against TCGPlayer market prices",
                 },
                 "total_verified": len(filtered),
                 "buy_signals": len(buy_signals),
