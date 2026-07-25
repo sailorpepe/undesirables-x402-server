@@ -33,6 +33,32 @@ def compute_leaf(pid: int, grade: str, company: str, median_cents: int, num_list
     return keccak256(keccak256(inner))
 
 
+# Domain tag for census leaves. The leading string changes the abi tuple shape,
+# so a census leaf can NEVER hash-collide with a price leaf — without this,
+# (pid, grade, grader, observedSlabs, uniqueCerts) has the same field shapes as
+# a price leaf and verifyGradedPrice(pid, grade, grader, 52, 35, proof) would
+# "prove" a 52-cent price that is actually supply data.
+CENSUS_TAG = "UNDSR_CENSUS_V1"
+
+
+def compute_census_leaf(pid: int, grade: str, grader: str,
+                        observed_slabs: int, unique_certs: int) -> bytes:
+    """Observed-slab census leaf (added 2026-07-25, sailorpepe-approved).
+
+    Commits SUPPLY alongside the price leaves in the same tree/root:
+    how many slabs of (product, grade, grader) we observe circulating on eBay,
+    and how many are pinned to unique cert numbers. The on-chain contract stays
+    untouched — verifyGradedPrice still verifies price leaves; census leaves
+    verify off-chain against the same on-chain root with this public encoding.
+    This is an eBay-OBSERVED census (circulating supply), not PSA pop.
+    """
+    inner = abi_encode(
+        ["string", "uint256", "string", "string", "uint256", "uint256"],
+        [CENSUS_TAG, pid, grade, grader, observed_slabs, unique_certs]
+    )
+    return keccak256(keccak256(inner))
+
+
 def build_merkle_tree(leaves):
     padded = list(leaves)
     while len(padded) & (len(padded) - 1):
@@ -93,9 +119,24 @@ def main():
         WHERE median_price IS NOT NULL AND num_listings > 0
         ORDER BY product_id ASC, grade ASC
     """).fetchall()
+
+    # Census aggregates — slab_census is fed nightly by daily_pipeline step 9.
+    # Table may not exist on a fresh clone; census is additive, never blocking.
+    try:
+        census_rows = c.execute("""
+            SELECT product_id, grade, grader, COUNT(*) AS slabs,
+                   COUNT(DISTINCT cert_number) AS certs
+            FROM slab_census
+            WHERE grader IS NOT NULL AND grade IS NOT NULL
+            GROUP BY product_id, grader, grade
+            ORDER BY product_id ASC, grader ASC, grade ASC
+        """).fetchall()
+    except sqlite3.OperationalError:
+        census_rows = []
     conn.close()
 
     print(f"  Graded Products: {len(rows):,}")
+    print(f"  Census entries:  {len(census_rows):,} (product, grader, grade) supply aggregates")
     if len(rows) == 0:
         print("  No graded prices found in DB. Exiting.")
         return
@@ -126,6 +167,18 @@ def main():
             "company": company,
             "median_cents": median_cents,
             "num_listings": num,
+            "leaf": "0x" + leaf.hex()
+        })
+
+    # Census leaves join the SAME tree — one root commits prices AND supply.
+    census_list = []
+    for pid, grade, grader, slabs, certs in census_rows:
+        leaf = compute_census_leaf(pid, grade, grader, slabs, certs)
+        leaves.append(leaf)
+        census_list.append({
+            "type": "census", "tag": CENSUS_TAG,
+            "product_id": pid, "grade": grade, "grader": grader,
+            "observed_slabs": slabs, "unique_certs": certs,
             "leaf": "0x" + leaf.hex()
         })
 
@@ -181,7 +234,10 @@ def main():
             "root": root_hex,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "tree": tree_hex,
-            "data": data_list
+            "data": data_list,
+            # census leaves share the tree; kept separate so the API can serve
+            # price proofs and supply proofs without guessing leaf types
+            "census": census_list
         }, f)
     print("  Cache updated.")
 
