@@ -23,6 +23,8 @@ import subprocess
 import sys
 import re
 import logging
+import threading
+import time as _time
 from contextlib import asynccontextmanager
 from typing import Optional
 import httpx
@@ -399,9 +401,20 @@ _PAYER_ALERTED = set()  # alert once per payer per process
 
 
 def _decode_payer(request):
-    """Payer address from the x402 X-PAYMENT header (exact/EVM EIP-3009)."""
+    """Payer address from the x402 payment header (exact/EVM EIP-3009).
+
+    Reads the v2 header FIRST, falling back to v1 — the same order the SDK's own
+    _extract_payment uses. Both versions base64-encode JSON whose scheme payload is
+    ExactEIP3009Payload(authorization=…, signature=…), so the address path below is
+    identical for v1 and v2; only the header name changed.
+
+    This is attribution/alerting only — settlement is the SDK middleware's job and
+    already handles both. But until 2026-07-24 this read x-payment ONLY, so a v2
+    payer would have settled while the first-organic-settlement alert stayed silent
+    and the payer went unattributed.
+    """
     import base64
-    hdr = request.headers.get("x-payment")
+    hdr = request.headers.get("payment-signature") or request.headers.get("x-payment")
     if not hdr:
         return None
     try:
@@ -450,7 +463,15 @@ async def _request_logger(request, call_next):
                 "ref": request.headers.get("referer", "")[:200],
             }
             # settled payment? record the payer + alarm on the first organic one
-            if response.status_code == 200 and "x-payment" in request.headers:
+            # Check BOTH header names. This gate read only "x-payment" (v1)
+            # until 2026-07-25 — the same blind spot fixed in _decode_payer the
+            # day before. A v2 payer sends PAYMENT-SIGNATURE, so their payment
+            # would have settled while being logged as an ordinary 200: no
+            # payer recorded, no organic alert. That would make "zero payers in
+            # the request log" a FALSE negative rather than evidence.
+            if response.status_code == 200 and (
+                    "payment-signature" in request.headers
+                    or "x-payment" in request.headers):
                 payer = _decode_payer(request)
                 if payer:
                     rec["payer"] = payer
@@ -874,7 +895,16 @@ try:
                 "network": NETWORK,
             },
             "extensions": declare_discovery_extension(
-                input={},
+                # NOT input={} — an empty dict makes the SDK drop queryParams
+                # entirely (`query_params=input_data if input_data else None`),
+                # so this route alone published no example params for agents to
+                # copy. Every other route ships a real example; this one now does
+                # too. (Unrelated: the "'method' is a required property" warning
+                # this route logs at import is a FALSE ALARM — it validates before
+                # bazaar_resource_server_extension enriches `method` at runtime.
+                # The served /.well-known/x402 does contain method. All 14 paid
+                # routes log it; none are actually broken.)
+                input={"game": "Pokemon"},
                 input_schema={
                     "type": "object",
                     "properties": {
@@ -1088,6 +1118,7 @@ async def root():
                 {"path": "/api/v1/collection", "description": "The Undesirables (UNDSR) NFT — live supply + public-mint status on Ethereum mainnet"},
                 {"path": "/api/v1/collection/wallet/{address}", "description": "UNDSR mint eligibility + holdings for a wallet"},
                 {"path": "/api/v1/collection/prepare-mint", "description": "Build an unsigned UNDSR mint transaction — you sign with your own wallet, we never hold keys"},
+                {"path": "/chart/{product_id}.png", "description": "Conformal forecast cone as a PNG — embeddable image, ?days=7..30 (free, no payment)"},
             ],
             "paid": [
                 {"path": "/api/v1/grade", "price": "$0.10", "description": "3-stage AI card grading (Vision + OpenCV + BGS capping) with ROI verdict"},
@@ -3814,6 +3845,140 @@ async def forecast_card(product_id: int):
                       g["drift_spike"], g["safe_hold"], g["momentum"], image=stored_img)
 
 
+# ---------------------------------------------------------------------------
+# Forecast chart (FREE) — renders the conformal cone as a PNG so agents can POST
+# a real forecast image instead of card art. Backed by tweet_visuals.py's brand
+# palette, which until now only ran once a day for daily_alpha.
+# ---------------------------------------------------------------------------
+_CHART_LOCK = threading.Lock()      # pyplot is NOT thread-safe; FastAPI runs sync
+                                    # routes in a threadpool, so serialise renders.
+_CHART_CACHE = {}                   # {(product_id, days): (epoch, png_bytes)}
+_CHART_TTL = 3600                   # forecasts only move on the nightly refit
+
+
+def _conformal_cone(card_name, price, days):
+    """Per-step p5/p25/p50/p75/p95 for h=1..days, by calling the SAME
+    _conformal_forecast the API serves at each horizon. Deliberately not a
+    reimplementation: the chart must never disagree with the JSON. The conformal
+    offsets are per-step arrays, so this is a true cone, not a straight line
+    interpolated to the terminal values."""
+    p5, p25, p50, p75, p95 = [price], [price], [price], [price], [price]
+    regime, var_pct, prob_up = "global", None, None
+    for h in range(1, days + 1):
+        fc = _conformal_forecast(card_name, price, h)
+        fp = fc["forecast_percentiles"]
+        p5.append(fp["5th"]); p25.append(fp["25th"]); p50.append(fp["50th"])
+        p75.append(fp["75th"]); p95.append(fp["95th"])
+        if h == days:
+            regime = fc["model_params"].get("regime") or "global"
+            var_pct = fc["risk_metrics"].get("VaR_95_pct")
+            prob_up = fc["grades"].get("prob_up")
+    return {"p5": p5, "p25": p25, "p50": p50, "p75": p75, "p95": p95,
+            "regime": regime, "var95_pct": var_pct, "prob_up": prob_up}
+
+
+@app.get("/chart/{product_id}.png", tags=["Free"])
+@limiter.limit("60/minute")
+def forecast_chart(request: Request, product_id: int, days: int = Query(30, ge=7, le=30)):
+    """🆓 **FREE** — the conformal forecast cone for a card as a PNG.
+
+    Same numbers as `GET /api/v1/forecast/{product_id}`, drawn: the calibrated
+    50% and 90% bands widening per-step, the drift median, and the 95% VaR floor.
+    Built for agents that want to post a chart rather than describe one."""
+    db = _get_db()
+    row = pr = None
+    if db:
+        try:
+            row = db.execute("SELECT name FROM cards WHERE product_id=?", [product_id]).fetchone()
+            if row:
+                pr = db.execute("SELECT market_price FROM price_history WHERE product_id=? "
+                                "AND market_price>0 ORDER BY date DESC LIMIT 1", [product_id]).fetchone()
+        finally:
+            db.close()
+    if not row or not pr:
+        return JSONResponse(status_code=404,
+                            content={"status": "not_found", "product_id": product_id,
+                                     "hint": "Find a product_id via GET /api/v1/search?query=<name>"})
+    name, price = row[0], float(pr[0])
+
+    key = (product_id, days)
+    now = _time.time()
+    hit = _CHART_CACHE.get(key)
+    if hit and now - hit[0] < _CHART_TTL:
+        png = hit[1]
+    else:
+        cone = _conformal_cone(name, price, days)
+        with _CHART_LOCK:
+            import io
+            import matplotlib
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+            import numpy as np
+            from tweet_visuals import (_setup_style, _add_branding, BG_COLOR, GRID_COLOR,
+                                       ACCENT_BLUE, ACCENT_GOLD, ACCENT_RED, ACCENT_GREEN,
+                                       TEXT_PRIMARY, TEXT_SECONDARY)
+            _setup_style()
+            x = np.arange(days + 1)
+            fig, ax = plt.subplots(figsize=(12, 6.5))
+            # Drop the axes so its centered title clears the branding block that
+            # _add_branding writes at figure y=0.93 — a long card name is wide
+            # enough to collide with the left-aligned subtitle otherwise.
+            fig.subplots_adjust(top=0.82)
+            # 0.15 left the 90% band's lower tail all but invisible on #0D1117 —
+            # the tail is the point of the product, so it has to be legible.
+            ax.fill_between(x, cone["p5"], cone["p95"], alpha=0.22, color=ACCENT_BLUE,
+                            label="5th–95th (90% band)")
+            ax.fill_between(x, cone["p25"], cone["p75"], alpha=0.28, color=ACCENT_BLUE,
+                            label="25th–75th (50% band)")
+            ax.plot(x, cone["p50"], color=ACCENT_GOLD, linewidth=2.5, label="Median", zorder=5)
+            # This is the 5th percentile = the 90% band floor. It is NOT VaR95:
+            # the bands come from a symmetric |actual-point|/price score, while
+            # VaR is fit one-sided at an inflated quantile, so the two differ
+            # (84198: p5 = -6.07% vs var95 = -8.17%). VaR stays in the stats box.
+            ax.plot(x, cone["p5"], color=ACCENT_RED, linewidth=1.0, alpha=0.6,
+                    label="5th percentile (90% floor)")
+            ax.axhline(y=price, color=TEXT_SECONDARY, linewidth=1, linestyle="--", alpha=0.5)
+            final = cone["p50"][-1]
+            col = ACCENT_GREEN if final > price else ACCENT_RED
+            ax.plot(days, final, "o", color=col, markersize=8, zorder=6)
+            ax.text(days + 0.4, final, f"${final:,.2f}", fontsize=11, fontweight="bold",
+                    color=col, va="center")
+            ax.set_xlabel("Days", fontsize=12)
+            ax.set_ylabel("Price ($)", fontsize=12)
+            ax.set_title(f"Risk Forecast: {name[:52]}", fontsize=18, fontweight="bold",
+                         color=TEXT_PRIMARY, pad=15)
+            stats = (f"Current: ${price:,.2f}\nMedian {days}d: ${final:,.2f}\n"
+                     f"Regime: {cone['regime']}")
+            if cone["prob_up"] is not None:
+                stats += f"\nUpside prob: {cone['prob_up'] * 100:.0f}%"
+            if cone["var95_pct"] is not None:
+                stats += f"\n95% VaR: {cone['var95_pct']:.0f}%"
+            ax.text(0.02, 0.98, stats, transform=ax.transAxes, fontsize=10,
+                    verticalalignment="top", color=TEXT_PRIMARY, family="monospace",
+                    bbox=dict(boxstyle="round,pad=0.6", facecolor=BG_COLOR,
+                              edgecolor=GRID_COLOR, alpha=0.9))
+            ax.legend(loc="lower right", fontsize=9, facecolor="#161B22", edgecolor=GRID_COLOR)
+            ax.grid(True, alpha=0.3)
+            ax.set_xlim(0, days + 3)
+            _add_branding(fig, "Conformal-calibrated · regime-aware bands · honest VaR")
+            buf = io.BytesIO()
+            # Render to memory, NOT tweet_visuals._save — that writes a FIXED
+            # filename per chart type, so two concurrent requests would overwrite
+            # each other's file and serve the wrong card.
+            fig.savefig(buf, format="png", dpi=140, bbox_inches="tight",
+                        facecolor=fig.get_facecolor(), edgecolor="none", pad_inches=0.3)
+            plt.close(fig)
+            png = buf.getvalue()
+        _CHART_CACHE[key] = (now, png)
+        if len(_CHART_CACHE) > 512:          # bounded: drop the oldest half
+            for k in sorted(_CHART_CACHE, key=lambda k: _CHART_CACHE[k][0])[:256]:
+                _CHART_CACHE.pop(k, None)
+
+    return Response(content=png, media_type="image/png",
+                    headers={"Cache-Control": f"public, max-age={_CHART_TTL}",
+                             "X-Forecast-Card": name[:80]})
+
+
 @app.get("/api/v1/simulate", tags=["Paid — $0.015"])
 async def simulate_price(
     card_name: str = Query(..., description="Card name to simulate"),
@@ -6081,6 +6246,46 @@ async def ebay_deletion_notification(request: Request):
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
+# ── OpenAPI x-payment-info (added 2026-07-25) ──────────────────────────────
+# x402 discovery crawlers (x402gle/OpenDexter auditions, and the same class of
+# tools) prefer an OpenAPI doc that carries `x-payment-info` on each paid
+# operation — x402gle's own crawl of the apex site reported "no x402
+# pricing/auth extensions detected". Derive it from _X402_MANIFEST_ROUTES (the
+# same table that feeds /.well-known/x402) so pricing has ONE source of truth
+# and this can never drift from what the paywall actually charges.
+_openapi_cache = None
+
+
+def _openapi_with_payment_info():
+    global _openapi_cache
+    if _openapi_cache is not None:
+        return _openapi_cache
+    from fastapi.openapi.utils import get_openapi
+    schema = get_openapi(title=app.title, version=app.version,
+                         description=app.description, routes=app.routes)
+    for route_key, cfg in _X402_MANIFEST_ROUTES.items():
+        parts = route_key.split(" ", 1)
+        method, path = (parts[0].lower(), parts[1]) if len(parts) == 2 else ("get", parts[0])
+        op = schema.get("paths", {}).get(path, {}).get(method)
+        if op is None:
+            continue
+        accepts = cfg.get("accepts", {})
+        op["x-payment-info"] = {
+            "protocol": "x402",
+            "x402Version": 2,
+            "scheme": accepts.get("scheme", "exact"),
+            "price": accepts.get("price"),
+            "network": accepts.get("network"),
+            "payTo": accepts.get("payTo"),
+            "asset": "USDC",
+        }
+    _openapi_cache = schema
+    return schema
+
+
+app.openapi = _openapi_with_payment_info
+
+
 if __name__ == "__main__":
     uvicorn.run(
         "server:app",
