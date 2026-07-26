@@ -2,7 +2,7 @@
 
 <img src="assets/banner.png" alt="TCG Oracle Banner" width="100%" />
 
-An x402 micropayment-gated API providing **financial intelligence for the $50B+ trading card market**. AI agents discover this server on the [x402 Bazaar](https://docs.cdp.coinbase.com/x402/bazaar), pay per-call with USDC on Base, and receive institutional-grade analytics with **full model transparency**.
+An x402 micropayment-gated API providing **financial intelligence for the $50B+ trading card market**. AI agents discover this server on the [x402 Bazaar](https://docs.cdp.coinbase.com/x402/bazaar), pay per-call in USDC (Base or Solana) or USDG (Robinhood Chain), and receive institutional-grade analytics with **full model transparency**.
 
 # ⚡ TCG Oracle — AI Card Grading & Market Data
 
@@ -85,7 +85,7 @@ carries a `set` field and a `product_id` you can pass straight to the other tool
 
 Every other TCG API tells you *what* a card is. We tell you *what it's worth*, *what it will be worth*, and *whether you should invest in it*. We do this using the same stochastic finance models that Wall Street uses for options pricing — applied to physical collectibles for the first time.
 
-AI agents discover this server on the [x402 Bazaar](https://docs.cdp.coinbase.com/x402/bazaar), pay per-call with USDC on Base, and receive institutional-grade analytics with **full model transparency**.
+AI agents discover this server on the [x402 Bazaar](https://docs.cdp.coinbase.com/x402/bazaar), pay per-call in USDC (Base or Solana) or USDG (Robinhood Chain), and receive institutional-grade analytics with **full model transparency**.
 
 ---
 
