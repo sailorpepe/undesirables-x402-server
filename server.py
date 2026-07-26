@@ -817,6 +817,36 @@ try:
                 )
             )
         },
+        "POST /api/v1/verdict": {
+            "description": "The Decision Endpoint (JSON-body variant): identical to GET /api/v1/verdict for agents that POST — comps + calibrated forecast + grade-ROI + market stance in one call.",
+            "mimeType": "application/json",
+            "serviceName": "The Undesirables Oracle",
+            "tags": ["decision", "verdict", "comps", "forecast", "grade-roi", "collectibles"],
+            "iconUrl": "https://the-undesirables.com/favicon.ico",
+            "accepts": {
+                "scheme": "exact",
+                "payTo": PAYMENT_ADDRESS,
+                "price": "$0.30",
+                "network": NETWORK,
+            },
+            "extensions": declare_discovery_extension(
+                input={"product_id": 84198},
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "product_id": {"type": "integer", "description": "TCGplayer product id (preferred)"},
+                        "card_name": {"type": "string", "description": "Card name if no product_id"},
+                        "service_tier": {"type": "string", "description": "PSA tier for the grade-ROI leg (default economy)"},
+                    },
+                    "required": []
+                },
+                body_type="json",
+                output=OutputConfig(
+                    example={"status": "ok", "tool": "market_verdict", "verdict": {"stance": "FAVORABLE", "reason": "calibrated odds lean up with contained downside"}},
+                    schema={"type": "object", "properties": {"status": {"type": "string"}, "verdict": {"type": "object"}}, "required": ["status"]}
+                )
+            )
+        },
         "GET /api/v1/grade-or-not": {
             "description": "Grade-or-Not Decision Engine: answers 'will grading this trading card make me money?' by combining AI grade prediction with PSA fee schedules, shipping costs, and graded market values to calculate expected ROI. Returns a clear GO/NO-GO verdict with best-case, predicted, and worst-case profit scenarios.",
             "mimeType": "application/json",
@@ -5031,23 +5061,10 @@ async def grade_or_not(
     }
 
 
-@app.get("/api/v1/verdict", tags=["Paid — $0.30"])
-@limiter.limit("30/minute")
-def market_verdict(
-    request: Request,
-    product_id: int = Query(0, description="TCGplayer product id (preferred)"),
-    card_name: str = Query("", description="Card name if you don't have a product_id"),
-    service_tier: str = Query("economy", description="PSA tier for the grade-ROI leg"),
-    shipping_cost: float = Query(15.0, description="Round-trip shipping estimate, USD"),
-):
-    """
-    💰 **$0.30 USDC** — The Decision Endpoint (sailorpepe-approved 2026-07-25).
-
-    One paid call, one decision: comps + calibrated 30-day forecast + grade-ROI,
-    composed from the same internals the individual endpoints serve — never a
-    second opinion that could disagree with them. The top line is a MARKET
-    STANCE grade (like Safe-Hold), deliberately not BUY/SELL advice.
-    """
+def _verdict_core(product_id: int, card_name: str, service_tier: str,
+                  shipping_cost: float):
+    """Shared implementation for GET (query) and POST (JSON body) — agents in
+    the wild use both (a POST probe 405'd 2026-07-26; batch-triage precedent)."""
     # ── resolve product (same pattern as /api/v1/forecast) ──
     name, price = None, 0.0
     db = _get_db()
@@ -5147,6 +5164,42 @@ def market_verdict(
             f"costs by ${abs(grade_profit):,.2f} ({grade_roi['value_basis']})."),
     }
 
+
+@app.get("/api/v1/verdict", tags=["Paid — $0.30"])
+@limiter.limit("30/minute")
+def market_verdict(
+    request: Request,
+    product_id: int = Query(0, description="TCGplayer product id (preferred)"),
+    card_name: str = Query("", description="Card name if you don't have a product_id"),
+    service_tier: str = Query("economy", description="PSA tier for the grade-ROI leg"),
+    shipping_cost: float = Query(15.0, description="Round-trip shipping estimate, USD"),
+):
+    """
+    💰 **$0.30 USDC** — The Decision Endpoint (sailorpepe-approved 2026-07-25).
+
+    One paid call, one decision: comps + calibrated 30-day forecast + grade-ROI,
+    composed from the same internals the individual endpoints serve — never a
+    second opinion that could disagree with them. The top line is a MARKET
+    STANCE grade (like Safe-Hold), deliberately not BUY/SELL advice.
+    """
+    return _verdict_core(product_id, card_name, service_tier, shipping_cost)
+
+
+@app.post("/api/v1/verdict", tags=["Paid — $0.30"])
+@limiter.limit("30/minute")
+async def market_verdict_post(request: Request):
+    """💰 **$0.30 USDC** — The Decision Endpoint (JSON-body variant for agents
+    that POST — same result as GET)."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    return _verdict_core(
+        int(body.get("product_id") or 0),
+        str(body.get("card_name") or ""),
+        str(body.get("service_tier") or "economy"),
+        float(body.get("shipping_cost") or 15.0),
+    )
 
 
 # ---------------------------------------------------------------------------
