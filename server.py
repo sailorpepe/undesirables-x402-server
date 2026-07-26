@@ -3968,7 +3968,17 @@ def forecast_chart(request: Request, product_id: int, days: int = Query(30, ge=7
             fig.savefig(buf, format="png", dpi=140, bbox_inches="tight",
                         facecolor=fig.get_facecolor(), edgecolor="none", pad_inches=0.3)
             plt.close(fig)
-            png = buf.getvalue()
+            # Strip ALL metadata via a bare PIL re-encode (Studio, 2026-07-25):
+            # matplotlib writes Software/dpi text chunks that strict media
+            # sanitizers reject — the buzz relay 422s the raw savefig output
+            # ("metadata or non-canonical metadata channel"), and even a sips
+            # re-encode failed; only bare pixels pass. PIL with no pnginfo/dpi
+            # kwargs writes exactly that. Costs ~10ms once per cache fill.
+            from PIL import Image as _PILImage
+            buf.seek(0)
+            clean = io.BytesIO()
+            _PILImage.open(buf).save(clean, format="PNG")
+            png = clean.getvalue()
         _CHART_CACHE[key] = (now, png)
         if len(_CHART_CACHE) > 512:          # bounded: drop the oldest half
             for k in sorted(_CHART_CACHE, key=lambda k: _CHART_CACHE[k][0])[:256]:
