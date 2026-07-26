@@ -6517,6 +6517,26 @@ async def ebay_deletion_notification(request: Request):
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
+# ── HEAD shim (2026-07-26) ─────────────────────────────────────────────────
+# FastAPI's APIRoute does NOT auto-allow HEAD on GET routes (plain Starlette
+# does), so every HEAD probe returned 405 — caught live when a Node liveness
+# checker HEAD-probed /api/v1/verdict during the post-announcement watch.
+# HEAD is what directory health checkers send (x402gle's "still responding"
+# prober class); a 405 risks being scored dead. Serve HEAD as a body-less GET
+# per RFC 9110. Registered LAST in the file = outermost middleware, so the
+# x402 paywall sees GET and HEAD-on-paid correctly reflects the 402.
+@app.middleware("http")
+async def _head_shim(request, call_next):
+    if request.method != "HEAD":
+        return await call_next(request)
+    request.scope["method"] = "GET"
+    resp = await call_next(request)
+    async for _ in resp.body_iterator:      # drain so the inner response closes
+        pass
+    from starlette.responses import Response as _EmptyResp
+    return _EmptyResp(status_code=resp.status_code, headers=dict(resp.headers))
+
+
 # ── OpenAPI x-payment-info (added 2026-07-25) ──────────────────────────────
 # x402 discovery crawlers (x402gle/OpenDexter auditions, and the same class of
 # tools) prefer an OpenAPI doc that carries `x-payment-info` on each paid
