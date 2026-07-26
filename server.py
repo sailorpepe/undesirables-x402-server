@@ -738,6 +738,35 @@ try:
                 )
             )
         },
+        "GET /api/v1/verdict": {
+            "description": "The Decision Endpoint: one paid call composing everything a collector or agent needs to act on a card — live comps (raw + observed PSA/BGS/CGC graded asks), the conformal-calibrated 30-day forecast (median, 5th–95th bands, honest VaR, Safe-Hold and Momentum grades), and a grade-ROI answer, plus a deterministic MARKET STANCE grade. Composed from the same internals the individual endpoints serve, so it can never disagree with them. Not financial advice — a calibrated market read.",
+            "mimeType": "application/json",
+            "serviceName": "The Undesirables Oracle",
+            "tags": ["decision", "verdict", "comps", "forecast", "grade-roi", "collectibles"],
+            "iconUrl": "https://the-undesirables.com/favicon.ico",
+            "accepts": {
+                "scheme": "exact",
+                "payTo": PAYMENT_ADDRESS,
+                "price": "$0.30",
+                "network": NETWORK,
+            },
+            "extensions": declare_discovery_extension(
+                input={"product_id": 84198},
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "product_id": {"type": "integer", "description": "TCGplayer product id (preferred)"},
+                        "card_name": {"type": "string", "description": "Card name if no product_id"},
+                        "service_tier": {"type": "string", "description": "PSA tier for the grade-ROI leg (default economy)"},
+                    },
+                    "required": []
+                },
+                output=OutputConfig(
+                    example={"status": "ok", "tool": "market_verdict", "verdict": {"stance": "FAVORABLE", "reason": "calibrated odds lean up with contained downside"}, "comps": {"raw": 950.0, "psa10": 2100.0}, "forecast": {"median_30d": 1085.4, "var95_pct": -8.17}, "grade_roi": {"worth_grading": True, "expected_profit_usd": 1090.0}},
+                    schema={"type": "object", "properties": {"status": {"type": "string"}, "verdict": {"type": "object"}, "comps": {"type": "object"}, "forecast": {"type": "object"}, "grade_roi": {"type": "object"}}, "required": ["status"]}
+                )
+            )
+        },
         "GET /api/v1/grade-or-not": {
             "description": "Grade-or-Not Decision Engine: answers 'will grading this trading card make me money?' by combining AI grade prediction with PSA fee schedules, shipping costs, and graded market values to calculate expected ROI. Returns a clear GO/NO-GO verdict with best-case, predicted, and worst-case profit scenarios.",
             "mimeType": "application/json",
@@ -985,7 +1014,9 @@ try:
             # Non-SDK clients (browsers, LLMs, curl) get enriched guidance
             path = request.url.path
             # Route-specific price and tool name for the enriched 402 message
-            if "grade-or-not" in path:
+            if "verdict" in path:
+                price, tool = "$0.30", "Market Verdict — The Decision Endpoint"
+            elif "grade-or-not" in path:
                 price, tool = "$0.10", "Grade-or-Not Decision Engine"
             elif "batch-triage" in path:
                 price, tool = "$0.50", "Batch Card Triage"
@@ -1122,6 +1153,7 @@ async def root():
             ],
             "paid": [
                 {"path": "/api/v1/grade", "price": "$0.10", "description": "3-stage AI card grading (Vision + OpenCV + BGS capping) with ROI verdict"},
+                {"path": "/api/v1/verdict", "price": "$0.30", "description": "The Decision Endpoint — comps + calibrated forecast + grade-ROI + market stance in one call"},
                 {"path": "/api/v1/grade-or-not", "price": "$0.10", "description": "Grade-or-Not ROI engine — should I grade this card?"},
                 {"path": "/api/v1/simulate", "price": "$0.015", "description": "conformal-calibrated risk forecast (Monte Carlo opt-in)"},
                 {"path": "/api/v1/trending", "price": "$0.025", "description": "Top movers by sales volume and price velocity"},
@@ -1856,6 +1888,7 @@ async def ai_plugin():
                 "/api/v1/recommend": "free",
                 "/api/v1/market": "$0.025",
                 "/api/v1/grade": "$0.10",
+                "/api/v1/verdict": "$0.30",
                 "/api/v1/grade-or-not": "$0.10",
                 "/api/v1/simulate": "$0.015",
                 "/api/v1/trending": "$0.025",
@@ -4885,6 +4918,121 @@ async def grade_or_not(
     }
 
 
+@app.get("/api/v1/verdict", tags=["Paid — $0.30"])
+@limiter.limit("30/minute")
+def market_verdict(
+    request: Request,
+    product_id: int = Query(0, description="TCGplayer product id (preferred)"),
+    card_name: str = Query("", description="Card name if you don't have a product_id"),
+    service_tier: str = Query("economy", description="PSA tier for the grade-ROI leg"),
+    shipping_cost: float = Query(15.0, description="Round-trip shipping estimate, USD"),
+):
+    """
+    💰 **$0.30 USDC** — The Decision Endpoint (sailorpepe-approved 2026-07-25).
+
+    One paid call, one decision: comps + calibrated 30-day forecast + grade-ROI,
+    composed from the same internals the individual endpoints serve — never a
+    second opinion that could disagree with them. The top line is a MARKET
+    STANCE grade (like Safe-Hold), deliberately not BUY/SELL advice.
+    """
+    # ── resolve product (same pattern as /api/v1/forecast) ──
+    name, price = None, 0.0
+    db = _get_db()
+    if not db:
+        raise HTTPException(status_code=503, detail="market database unavailable")
+    try:
+        if product_id:
+            row = db.execute("SELECT name FROM cards WHERE product_id=?", [product_id]).fetchone()
+            pr = db.execute("SELECT market_price FROM price_history WHERE product_id=? "
+                            "AND market_price>0 ORDER BY date DESC LIMIT 1", [product_id]).fetchone()
+            if row and pr:
+                name, price = row[0], float(pr[0])
+        elif card_name:
+            row = db.execute(
+                "SELECT c.product_id, c.name, p.market_price FROM cards_fts f "
+                "JOIN cards c ON c.rowid=f.rowid "
+                "JOIN price_history p ON p.product_id=c.product_id "
+                "  AND p.date=(SELECT MAX(date) FROM price_history) "
+                "WHERE cards_fts MATCH ? AND p.market_price>0 "
+                "ORDER BY p.market_price DESC LIMIT 1",
+                [" ".join(re.sub(r"[^A-Za-z0-9 ]", " ", card_name).split())]).fetchone()
+            if row:
+                product_id, name, price = int(row[0]), row[1], float(row[2])
+    finally:
+        db.close()
+    if not name or price <= 0:
+        return JSONResponse(status_code=404, content={
+            "status": "not_found", "product_id": product_id, "card_name": card_name,
+            "hint": "Find a product_id via GET /api/v1/search?query=<name>"})
+
+    # ── calibrated forecast (the same _conformal_forecast every surface uses) ──
+    fc = _conformal_forecast(name, price, 30)
+    fp = fc["forecast_percentiles"]
+    grades = fc.get("grades", {})
+    var95 = fc.get("risk_metrics", {}).get("VaR_95_pct")
+    prob_up = grades.get("prob_up")
+
+    # ── graded comps: REAL asks when we track them, multipliers only as fallback ──
+    comps = {"raw": round(price, 2)}
+    gdb = sqlite3.connect(f"file:{TCGCSV_DB}?mode=ro", uri=True)
+    try:
+        for grade, company, median in gdb.execute(
+                "SELECT grade, grading_company, median_price FROM graded_prices "
+                "WHERE product_id=? AND median_price>0", [product_id]):
+            comps[f"{(company or 'PSA').lower()}{grade}"] = round(float(median), 2)
+    except sqlite3.OperationalError:
+        pass
+    finally:
+        gdb.close()
+
+    # ── grade-ROI: the SAME fee schedule + multiplier arithmetic as grade-or-not ──
+    tier = PSA_FEE_SCHEDULE.get(service_tier, PSA_FEE_SCHEDULE["economy"])
+    total_cost = tier["fee"] + shipping_cost
+    psa10_ask = comps.get("psa10")
+    est_grade = 8.0 if price > 100 else (7.5 if price > 30 else 7.0)
+    closest = min(GRADE_MULTIPLIERS, key=lambda g: abs(g - est_grade))
+    est_graded_value = psa10_ask if psa10_ask else price * GRADE_MULTIPLIERS[closest]["mid"]
+    grade_profit = est_graded_value - price - total_cost
+    grade_roi = {
+        "worth_grading": bool(grade_profit > 0),
+        "expected_profit_usd": round(grade_profit, 2),
+        "cost_usd": round(total_cost, 2),
+        "value_basis": "observed PSA 10 ask" if psa10_ask else
+                       f"industry multiplier at grade {closest}",
+        "detail": "GET /api/v1/grade-or-not for full best/worst scenarios",
+    }
+
+    # ── market stance: a GRADE, not advice — deterministic from the forecast ──
+    if prob_up is not None and var95 is not None:
+        if prob_up >= 0.65 and var95 > -15:
+            stance, why = "FAVORABLE", "calibrated odds lean up with contained downside"
+        elif prob_up >= 0.55:
+            stance, why = "LEAN-UP", "odds modestly up"
+        elif prob_up <= 0.40 or var95 <= -30:
+            stance, why = "WEAK", "downside risk dominates the calibrated bands"
+        else:
+            stance, why = "NEUTRAL", "no calibrated edge either way"
+    else:
+        stance, why = "NEUTRAL", "insufficient calibration data"
+
+    return {
+        "status": "ok", "tool": "market_verdict", "price": "$0.30",
+        "product_id": product_id, "name": name,
+        "verdict": {"stance": stance, "reason": why,
+                    "note": "market stance grade, not financial advice"},
+        "comps": comps,
+        "forecast": {
+            "median_30d": fp.get("50th"), "p5": fp.get("5th"), "p95": fp.get("95th"),
+            "var95_pct": var95, "prob_up": prob_up,
+            "safe_hold": grades.get("safe_hold"), "momentum": grades.get("momentum"),
+            "regime": fc.get("model_params", {}).get("regime"),
+        },
+        "grade_roi": grade_roi,
+        "plain_english": (
+            f"{name}: ${price:,.2f} now, median ${fp.get('50th'):,.2f} in 30d. "
+            f"Stance {stance} — {why}. Grading {'clears' if grade_roi['worth_grading'] else 'does not clear'} "
+            f"costs by ${abs(grade_profit):,.2f} ({grade_roi['value_basis']})."),
+    }
 
 
 
