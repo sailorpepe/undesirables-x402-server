@@ -396,6 +396,20 @@ _REQLOG_SKIP = ("/health", "/favicon")
 # our smoke-test buyer + our own receiving address.
 _SELF_WALLETS = set()
 try:
+    # Solana smoke-test buyer (2026-07-25) — without this, our own Solana
+    # smoke would fire the first-organic-settlement phone alert. Base58 is
+    # case-sensitive: stored as-is, never lowercased.
+    _spk = os.getenv("SOLANA_BUYER_PRIVATE_KEY", "").strip()
+    if _spk:
+        from solders.keypair import Keypair as _KP
+        try:
+            _skp = _KP.from_base58_string(_spk)
+        except Exception:
+            _skp = _KP.from_bytes(bytes(json.loads(_spk)))
+        _SELF_WALLETS.add(str(_skp.pubkey()))
+except Exception:
+    pass
+try:
     from eth_account import Account as _Acct
     _bpk = os.getenv("BUYER_PRIVATE_KEY")
     if _bpk:
@@ -424,7 +438,26 @@ def _decode_payer(request):
         return None
     try:
         payload = json.loads(base64.b64decode(hdr + "=" * (-len(hdr) % 4)))
-        return (payload.get("payload", {}).get("authorization", {}).get("from") or "").lower() or None
+        inner = payload.get("payload", {})
+        # EVM exact: EIP-3009 authorization carries the payer directly.
+        frm = inner.get("authorization", {}).get("from")
+        if frm:
+            return frm.lower()
+        # SVM exact (Solana leg, 2026-07-25): the payload is a partially-signed
+        # transaction whose FEE PAYER (signer 0) is the FACILITATOR — the buyer
+        # is the second required signer (the token authority). Without this
+        # branch a Solana payer settles unattributed: the exact blindness class
+        # we shipped twice already (v1-only header, v1-only gate). Not thrice.
+        tx64 = inner.get("transaction")
+        if tx64:
+            from solders.transaction import VersionedTransaction
+            tx = VersionedTransaction.from_bytes(base64.b64decode(tx64))
+            msg = tx.message
+            n = msg.header.num_required_signatures
+            keys = list(msg.account_keys)[:n]
+            # base58 is case-sensitive — do NOT lowercase Solana addresses
+            return str(keys[1] if n > 1 else keys[0])
+        return None
     except Exception:
         return None
 
@@ -922,30 +955,12 @@ try:
             "serviceName": "The Undesirables Oracle",
             "tags": ["market-data", "daily-snapshot", "tcg", "top-movers", "collectibles"],
             "iconUrl": "https://the-undesirables.com/favicon.ico",
-            # PILOT for the multi-chain rollout (2026-07-25): accepts is a LIST —
-            # agents pick Base USDC or Solana USDC from the same 402. The rest of
-            # the routes stay single-leg until this one has a verified Solana
-            # settlement (rollout discipline: one route, one real payment, then
-            # the fleet).
-            "accepts": ([
-                {
-                    "scheme": "exact",
-                    "payTo": PAYMENT_ADDRESS,
-                    "price": "$0.025",
-                    "network": NETWORK,
-                },
-                {
-                    "scheme": "exact",
-                    "payTo": SOLANA_PAYMENT_ADDRESS,
-                    "price": "$0.025",
-                    "network": SOLANA_NETWORK,
-                },
-            ] if SOLANA_PAYMENT_ADDRESS else {
+            "accepts": {
                 "scheme": "exact",
                 "payTo": PAYMENT_ADDRESS,
                 "price": "$0.025",
                 "network": NETWORK,
-            }),
+            },
             "extensions": declare_discovery_extension(
                 # NOT input={} — an empty dict makes the SDK drop queryParams
                 # entirely (`query_params=input_data if input_data else None`),
@@ -971,6 +986,20 @@ try:
             )
         },
     }
+
+    # ── Fleet-wide Solana leg (2026-07-25, after the /api/v1/market pilot) ──
+    # Every paid route advertises BOTH chains from one 402: same price, agent
+    # picks. One loop instead of 14 edited literals — future routes get the
+    # Solana leg automatically, and single-leg config returns the moment
+    # SOLANA_PAYMENT_ADDRESS is unset.
+    if SOLANA_PAYMENT_ADDRESS:
+        for _cfg in x402_routes.values():
+            _acc = _cfg.get("accepts")
+            if isinstance(_acc, dict):
+                _cfg["accepts"] = [
+                    _acc,
+                    {**_acc, "payTo": SOLANA_PAYMENT_ADDRESS, "network": SOLANA_NETWORK},
+                ]
 
     # expose the route table for the /.well-known/x402 manifest generator
     _X402_MANIFEST_ROUTES.update(x402_routes)
