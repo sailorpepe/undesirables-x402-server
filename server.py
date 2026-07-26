@@ -50,6 +50,18 @@ PAYMENT_ADDRESS = os.getenv("PAYMENT_ADDRESS", "0x642e8a7C289381f24f0395e0539f0b
 # facilitator serves both legs. Address is receive-only; no Solana key here.
 SOLANA_PAYMENT_ADDRESS = os.getenv("SOLANA_PAYMENT_ADDRESS", "")
 SOLANA_NETWORK = "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"
+# Robinhood Chain leg (sailorpepe-approved USDG, 2026-07-26). Every value
+# below was VERIFIED on-chain via the official RPC, not copied from a search:
+# USDG contract from Paxos' own docs; decimals()=6 read from the contract;
+# EIP-3009 typehash present; EIP-712 domain proven by computing the separator
+# for ("Global Dollar","1",4663,USDG) and matching DOMAIN_SEPARATOR() exactly.
+# Facilitator: Naven — /supported lists exact on eip155:4663 (CDP does not).
+ROBINHOOD_NETWORK = "eip155:4663"
+USDG_ADDRESS = "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168"
+USDG_DECIMALS = 6
+USDG_EIP712 = {"name": "Global Dollar", "version": "1"}
+ROBINHOOD_ENABLED = os.getenv("ROBINHOOD_LEG", "1") == "1"
+NAVEN_FACILITATOR_URL = "https://facilitator.naven.network"
 FACILITATOR_URL = os.getenv("FACILITATOR_URL", "https://x402.org/facilitator")
 NETWORK = os.getenv("NETWORK", "eip155:84532")  # Base Sepolia default
 USDC_ADDRESS = os.getenv("USDC_ADDRESS", "0x036CbD53842c5426634e7929541eC2318f3dCF7e")
@@ -992,14 +1004,18 @@ try:
     # picks. One loop instead of 14 edited literals — future routes get the
     # Solana leg automatically, and single-leg config returns the moment
     # SOLANA_PAYMENT_ADDRESS is unset.
-    if SOLANA_PAYMENT_ADDRESS:
+    if SOLANA_PAYMENT_ADDRESS or ROBINHOOD_ENABLED:
         for _cfg in x402_routes.values():
             _acc = _cfg.get("accepts")
             if isinstance(_acc, dict):
-                _cfg["accepts"] = [
-                    _acc,
-                    {**_acc, "payTo": SOLANA_PAYMENT_ADDRESS, "network": SOLANA_NETWORK},
-                ]
+                _legs = [_acc]
+                if SOLANA_PAYMENT_ADDRESS:
+                    _legs.append({**_acc, "payTo": SOLANA_PAYMENT_ADDRESS,
+                                  "network": SOLANA_NETWORK})
+                if ROBINHOOD_ENABLED:
+                    # same EVM receiving address; money parser maps price→USDG
+                    _legs.append({**_acc, "network": ROBINHOOD_NETWORK})
+                _cfg["accepts"] = _legs
 
     # expose the route table for the /.well-known/x402 manifest generator
     _X402_MANIFEST_ROUTES.update(x402_routes)
@@ -1040,8 +1056,34 @@ try:
         # Testnet: no auth needed
         facilitator = HTTPFacilitatorClient({"url": FACILITATOR_URL})
 
-    x402_server = x402ResourceServer(facilitator)
-    register_exact_evm_server(x402_server)  # Registers eip155:* wildcard
+    # Facilitators: the SDK takes a LIST and routes per-network from each
+    # /supported — first registrant wins a network, so CDP (first) keeps
+    # Base + Solana and Naven only picks up eip155:4663, which CDP lacks.
+    facilitators = [facilitator]
+    if ROBINHOOD_ENABLED:
+        facilitators.append(HTTPFacilitatorClient({"url": NAVEN_FACILITATOR_URL}))
+        print(f"🔗 Naven facilitator added for {ROBINHOOD_NETWORK} (USDG)")
+    x402_server = x402ResourceServer(facilitators)
+
+    # EVM scheme registered by hand (not register_exact_evm_server) so we can
+    # attach a money parser: the SDK has no default stablecoin for 4663, so
+    # "$0.025" must resolve to USDG atomic units + the PROVEN EIP-712 domain.
+    from x402.mechanisms.evm.exact.server import ExactEvmScheme
+    from x402.schemas import AssetAmount
+
+    _evm_scheme = ExactEvmScheme()
+
+    def _usdg_money_parser(amount, network):
+        if network == ROBINHOOD_NETWORK:
+            return AssetAmount(
+                amount=str(int(round(amount * 10 ** USDG_DECIMALS))),
+                asset=USDG_ADDRESS,
+                extra=dict(USDG_EIP712),
+            )
+        return None                      # every other network → default USDC path
+
+    _evm_scheme.register_money_parser(_usdg_money_parser)
+    x402_server.register("eip155:*", _evm_scheme)
     if SOLANA_PAYMENT_ADDRESS:
         from x402.mechanisms.svm.exact.register import register_exact_svm_server
         register_exact_svm_server(x402_server)  # Registers solana:* — same CDP facilitator
@@ -1864,6 +1906,12 @@ def _build_x402_manifest() -> dict:
         for acc in accepts_list:
             atomic = _price_to_atomic(acc.get("price", "0"))
             net = acc.get("network", NETWORK)
+            if net == ROBINHOOD_NETWORK:
+                asset, extra = USDG_ADDRESS, dict(USDG_EIP712)
+            elif net.startswith("solana"):
+                asset, extra = SOL_USDC_MINT, {"name": "USD Coin", "version": "2"}
+            else:
+                asset, extra = USDC_ADDRESS, {"name": "USD Coin", "version": "2"}
             out_accepts.append({
                 "scheme": acc.get("scheme", "exact"),
                 "network": net,
@@ -1871,10 +1919,10 @@ def _build_x402_manifest() -> dict:
                 # the x402 PaymentRequirements spec uses `maxAmountRequired`)
                 "amount": atomic,
                 "maxAmountRequired": atomic,
-                "asset": SOL_USDC_MINT if net.startswith("solana") else USDC_ADDRESS,
+                "asset": asset,
                 "payTo": acc.get("payTo", PAYMENT_ADDRESS),
                 "maxTimeoutSeconds": 300,
-                "extra": {"name": "USD Coin", "version": "2"},
+                "extra": extra,
             })
         entry = {
             "resource": base + path,
