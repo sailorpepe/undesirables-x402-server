@@ -45,6 +45,11 @@ load_dotenv()
 # Config
 # ---------------------------------------------------------------------------
 PAYMENT_ADDRESS = os.getenv("PAYMENT_ADDRESS", "0x642e8a7C289381f24f0395e0539f0bA41c74Cc1B")
+# Solana leg (sailorpepe-directed 2026-07-25). CAIP-2 mainnet id; CDP's
+# facilitator supports it natively (verified via /supported), so the SAME
+# facilitator serves both legs. Address is receive-only; no Solana key here.
+SOLANA_PAYMENT_ADDRESS = os.getenv("SOLANA_PAYMENT_ADDRESS", "")
+SOLANA_NETWORK = "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"
 FACILITATOR_URL = os.getenv("FACILITATOR_URL", "https://x402.org/facilitator")
 NETWORK = os.getenv("NETWORK", "eip155:84532")  # Base Sepolia default
 USDC_ADDRESS = os.getenv("USDC_ADDRESS", "0x036CbD53842c5426634e7929541eC2318f3dCF7e")
@@ -917,12 +922,30 @@ try:
             "serviceName": "The Undesirables Oracle",
             "tags": ["market-data", "daily-snapshot", "tcg", "top-movers", "collectibles"],
             "iconUrl": "https://the-undesirables.com/favicon.ico",
-            "accepts": {
+            # PILOT for the multi-chain rollout (2026-07-25): accepts is a LIST —
+            # agents pick Base USDC or Solana USDC from the same 402. The rest of
+            # the routes stay single-leg until this one has a verified Solana
+            # settlement (rollout discipline: one route, one real payment, then
+            # the fleet).
+            "accepts": ([
+                {
+                    "scheme": "exact",
+                    "payTo": PAYMENT_ADDRESS,
+                    "price": "$0.025",
+                    "network": NETWORK,
+                },
+                {
+                    "scheme": "exact",
+                    "payTo": SOLANA_PAYMENT_ADDRESS,
+                    "price": "$0.025",
+                    "network": SOLANA_NETWORK,
+                },
+            ] if SOLANA_PAYMENT_ADDRESS else {
                 "scheme": "exact",
                 "payTo": PAYMENT_ADDRESS,
                 "price": "$0.025",
                 "network": NETWORK,
-            },
+            }),
             "extensions": declare_discovery_extension(
                 # NOT input={} — an empty dict makes the SDK drop queryParams
                 # entirely (`query_params=input_data if input_data else None`),
@@ -990,6 +1013,10 @@ try:
 
     x402_server = x402ResourceServer(facilitator)
     register_exact_evm_server(x402_server)  # Registers eip155:* wildcard
+    if SOLANA_PAYMENT_ADDRESS:
+        from x402.mechanisms.svm.exact.register import register_exact_svm_server
+        register_exact_svm_server(x402_server)  # Registers solana:* — same CDP facilitator
+        print(f"✅ Solana leg enabled — payTo {SOLANA_PAYMENT_ADDRESS[:8]}… on {SOLANA_NETWORK[:18]}…")
     x402_server.register_extension(bazaar_resource_server_extension)
 
     _mw = payment_middleware(x402_routes, x402_server)
@@ -1798,8 +1825,28 @@ def _build_x402_manifest() -> dict:
     for route_key, cfg in _X402_MANIFEST_ROUTES.items():
         parts = route_key.split(" ", 1)
         method, path = (parts[0], parts[1]) if len(parts) == 2 else ("GET", parts[0])
+        # accepts may be a single dict OR a list (multi-chain pilot, 2026-07-25) —
+        # normalize and emit EVERY leg so crawlers see all payment options.
         accepts_cfg = cfg.get("accepts", {})
-        atomic = _price_to_atomic(accepts_cfg.get("price", "0"))
+        accepts_list = accepts_cfg if isinstance(accepts_cfg, list) else [accepts_cfg]
+        # USDC mint on Solana mainnet (per-chain asset id; EVM uses the Base contract)
+        SOL_USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+        out_accepts = []
+        for acc in accepts_list:
+            atomic = _price_to_atomic(acc.get("price", "0"))
+            net = acc.get("network", NETWORK)
+            out_accepts.append({
+                "scheme": acc.get("scheme", "exact"),
+                "network": net,
+                # emit both keys for max crawler compatibility (CDP uses `amount`,
+                # the x402 PaymentRequirements spec uses `maxAmountRequired`)
+                "amount": atomic,
+                "maxAmountRequired": atomic,
+                "asset": SOL_USDC_MINT if net.startswith("solana") else USDC_ADDRESS,
+                "payTo": acc.get("payTo", PAYMENT_ADDRESS),
+                "maxTimeoutSeconds": 300,
+                "extra": {"name": "USD Coin", "version": "2"},
+            })
         entry = {
             "resource": base + path,
             "type": "http",
@@ -1807,18 +1854,7 @@ def _build_x402_manifest() -> dict:
             "description": cfg.get("description", ""),
             "mimeType": cfg.get("mimeType", "application/json"),
             "method": method,
-            "accepts": [{
-                "scheme": accepts_cfg.get("scheme", "exact"),
-                "network": accepts_cfg.get("network", NETWORK),
-                # emit both keys for max crawler compatibility (CDP uses `amount`,
-                # the x402 PaymentRequirements spec uses `maxAmountRequired`)
-                "amount": atomic,
-                "maxAmountRequired": atomic,
-                "asset": USDC_ADDRESS,
-                "payTo": accepts_cfg.get("payTo", PAYMENT_ADDRESS),
-                "maxTimeoutSeconds": 300,
-                "extra": {"name": "USD Coin", "version": "2"},
-            }],
+            "accepts": out_accepts,
         }
         if cfg.get("extensions"):
             entry["extensions"] = cfg["extensions"]
@@ -6427,15 +6463,20 @@ def _openapi_with_payment_info():
         op = schema.get("paths", {}).get(path, {}).get(method)
         if op is None:
             continue
+        # accepts may be a dict or a list (multi-chain pilot) — primary leg
+        # first, all legs listed under `networks`.
         accepts = cfg.get("accepts", {})
+        acc_list = accepts if isinstance(accepts, list) else [accepts]
+        primary = acc_list[0]
         op["x-payment-info"] = {
             "protocol": "x402",
             "x402Version": 2,
-            "scheme": accepts.get("scheme", "exact"),
-            "price": accepts.get("price"),
-            "network": accepts.get("network"),
-            "payTo": accepts.get("payTo"),
+            "scheme": primary.get("scheme", "exact"),
+            "price": primary.get("price"),
+            "network": primary.get("network"),
+            "payTo": primary.get("payTo"),
             "asset": "USDC",
+            "networks": [a.get("network") for a in acc_list],
         }
     _openapi_cache = schema
     return schema
