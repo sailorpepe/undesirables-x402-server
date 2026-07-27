@@ -515,12 +515,18 @@ def _alert_organic_settlement(payer, path):
         topic = os.getenv("NTFY_TOPIC")
         if not topic:
             return
-        body = (f"🎉 FIRST ORGANIC x402 SETTLEMENT\npayer: {payer}\nendpoint: {path}\n"
-                f"A real buyer paid — the demand wave may have started.")
+        # Wording fixed 2026-07-27: this used to read "A real buyer paid" for
+        # ANY non-self payer, which is a claim we can't support from one
+        # settlement — the 47-services sampler would have triggered it verbatim.
+        # Say what we know (an unclassified wallet paid) and what to do (check).
+        body = (f"UNCLASSIFIED PAYER settled\npayer: {payer}\nendpoint: {path}\n"
+                f"Not one of our wallets and not a known probe. Could be a real "
+                f"customer, an unlisted verifier, or a sampler — check the wallet "
+                f"before counting it as demand.")
         try:
             _ur.urlopen(_ur.Request(
                 f"https://ntfy.sh/{topic}", data=body.encode(),
-                headers={"Title": "ORGANIC BUYER on the oracle", "Priority": "urgent", "Tags": "moneybag,tada"}),
+                headers={"Title": "Unclassified payer on the oracle", "Priority": "urgent", "Tags": "moneybag"}),
                 timeout=15)
         except Exception:
             pass
@@ -564,20 +570,35 @@ async def _request_logger(request, call_next):
                 payer = _decode_payer(request)
                 if payer:
                     rec["payer"] = payer
-                    # Three states, not two (2026-07-26): self / probe / organic.
-                    # `organic` stays as a DERIVED bool so the monitor, the
-                    # healthcheck and every past log analysis keep working.
+                    # self / probe / UNKNOWN — never "organic" (2026-07-27).
+                    # We can prove two things about a payer: it's ours (we hold
+                    # the key) or it's a known probe. Everything else is NO
+                    # INFORMATION — a customer, an unlisted verifier, or a
+                    # sampler are indistinguishable from one settlement. The
+                    # previous code wrote organic:true for that case, asserting
+                    # demand we cannot observe. This is the rule sailorpepe
+                    # co-signed into the x402 caller-attribution draft ("absence
+                    # and unknown both mean NO INFORMATION; neither means
+                    # organic demand") — we shouldn't publish a rule we break.
+                    # Real precedent: the 47-services sampler we logged as
+                    # organic:true and nearly announced as our first customer.
                     if payer in _SELF_WALLETS:
                         rec["payer_class"] = "self"
                     elif payer in _KNOWN_PROBES:
                         rec["payer_class"] = "probe"
                     else:
-                        rec["payer_class"] = "organic"
-                    rec["organic"] = rec["payer_class"] == "organic"
+                        rec["payer_class"] = "unknown"
+                    # `organic` retired as a stored field. Anything counting
+                    # revenue must classify by payer address deliberately, not
+                    # read a boolean we were never entitled to write.
                     # paid-but-failed: money in, nothing delivered. Flagged so
                     # it can never be silently counted as a happy sale.
                     rec["paid_failed"] = response.status_code >= 400
-                    if (rec["organic"] and response.status_code < 400
+                    # Still alert on unknown payers — an unclassified settlement
+                    # is exactly the event worth waking up for. The alert says
+                    # "unclassified", not "customer".
+                    if (rec["payer_class"] == "unknown"
+                            and response.status_code < 400
                             and payer not in _PAYER_ALERTED):
                         _PAYER_ALERTED.add(payer)
                         _alert_organic_settlement(payer, path)
