@@ -407,6 +407,23 @@ _REQLOG_SKIP = ("/health", "/favicon")
 # has started; we want to know within seconds, not weeks. Self wallets =
 # our smoke-test buyer + our own receiving address.
 _SELF_WALLETS = set()
+
+# ── Known third-party PROBES (playbook #3's missing half, 2026-07-26) ──
+# `organic = payer not in _SELF_WALLETS` excluded only OUR wallets, so a
+# third-party VERIFIER was logged organic:true and would fire the "first real
+# buyer" alarm. Dexter's 4 payments (0.400 USDC) were audits, not demand —
+# counting them as customers corrupts the single metric this business runs on.
+# Evidence for the entries below: UA Dexter-Verifier/1.0 from IP
+# 18.217.112.104, each payment matched to a served response 2-3s later at
+# exact list price, across both the EVM and Solana legs.
+_KNOWN_PROBES = {
+    "0x7e571e959cc7c75ccdd2eac24f8775ea2eaa2f09",          # OpenDexter/x402gle verifier (EVM)
+    "TeStKWyNre9PW8XbLfvuBm9f6EnTBYqS5GXTzciCnHw",         # same verifier, Solana leg
+}
+# Extra probe addresses without a redeploy: comma-separated, same casing rules
+# as the wallets themselves (EVM lowercased, base58 verbatim).
+_KNOWN_PROBES |= {p.strip() for p in os.getenv("KNOWN_PROBE_WALLETS", "").split(",") if p.strip()}
+
 try:
     # Solana smoke-test buyer (2026-07-25) — without this, our own Solana
     # smoke would fire the first-organic-settlement phone alert. Base58 is
@@ -519,14 +536,34 @@ async def _request_logger(request, call_next):
             # would have settled while being logged as an ordinary 200: no
             # payer recorded, no organic alert. That would make "zero payers in
             # the request log" a FALSE negative rather than evidence.
-            if response.status_code == 200 and (
+            # Record on ANY status, not just 200 (fixed 2026-07-26, found while
+            # paid-verifying the SSRF fix: that request SETTLED but logged
+            # payer:NONE because it returned 400). A paid-but-failed call is the
+            # MOST important one to see — the customer was charged and got
+            # nothing. Third instance of this blindness class (v1-only header,
+            # v1-only gate, now 200-only gate); alerting still fires on 2xx only,
+            # so an error can't masquerade as a happy first sale.
+            if (200 <= response.status_code < 600) and (
                     "payment-signature" in request.headers
                     or "x-payment" in request.headers):
                 payer = _decode_payer(request)
                 if payer:
                     rec["payer"] = payer
-                    rec["organic"] = payer not in _SELF_WALLETS
-                    if rec["organic"] and payer not in _PAYER_ALERTED:
+                    # Three states, not two (2026-07-26): self / probe / organic.
+                    # `organic` stays as a DERIVED bool so the monitor, the
+                    # healthcheck and every past log analysis keep working.
+                    if payer in _SELF_WALLETS:
+                        rec["payer_class"] = "self"
+                    elif payer in _KNOWN_PROBES:
+                        rec["payer_class"] = "probe"
+                    else:
+                        rec["payer_class"] = "organic"
+                    rec["organic"] = rec["payer_class"] == "organic"
+                    # paid-but-failed: money in, nothing delivered. Flagged so
+                    # it can never be silently counted as a happy sale.
+                    rec["paid_failed"] = response.status_code >= 400
+                    if (rec["organic"] and response.status_code < 400
+                            and payer not in _PAYER_ALERTED):
                         _PAYER_ALERTED.add(payer)
                         _alert_organic_settlement(payer, path)
             os.makedirs(os.path.dirname(_REQLOG), exist_ok=True)
@@ -2875,18 +2912,42 @@ ALERTS_DB = Path(__file__).parent / "alerts.sqlite"
 
 
 def _is_safe_url(url: str) -> bool:
-    """Block SSRF: reject private/reserved IP ranges in webhook URLs."""
+    """Block SSRF: only http(s), and every resolved address must be public.
+
+    Hardened 2026-07-26 (audit). Three holes closed:
+      1. NO SCHEME CHECK — file://, gopher://, ftp:// passed whenever the host
+         resolved publicly. Now an explicit allowlist.
+      2. FIRST-RECORD-ONLY — gethostbyname returns one A record, so a host
+         publishing one public + one private address slipped through. Now
+         getaddrinfo, and EVERY returned address must pass.
+      3. IPv6 INVISIBLE — ::1 and fc00::/7 were never evaluated. getaddrinfo
+         covers both families; ipaddress handles v6 natively.
+    Also rejects multicast/unspecified. NOTE the residual risk this cannot fix:
+    DNS rebinding (TOCTOU) — we resolve here, the fetcher resolves again. The
+    real mitigation is pinning the validated IP at fetch time; until then this
+    box's local services (:3000 relay, :7777, :1004, :11434 Ollama) rely on
+    attacker effort, not impossibility.
+    """
     from urllib.parse import urlparse
     import socket
+    import ipaddress
     try:
         parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            return False
         hostname = parsed.hostname
         if not hostname:
             return False
-        ip = socket.gethostbyname(hostname)
-        import ipaddress
-        addr = ipaddress.ip_address(ip)
-        return not (addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved)
+        infos = socket.getaddrinfo(hostname, None)
+        if not infos:
+            return False
+        for info in infos:
+            addr = ipaddress.ip_address(info[4][0])
+            if (addr.is_private or addr.is_loopback or addr.is_link_local
+                    or addr.is_reserved or addr.is_multicast
+                    or addr.is_unspecified):
+                return False
+        return True
     except Exception:
         return False
 
@@ -3423,20 +3484,33 @@ def _get_calibrated_params(card_name: str) -> dict:
 # ---------------------------------------------------------------------------
 @app.get("/api/v1/grade", tags=["Paid — $0.10"])
 async def grade_card(
-    image_url: str = Query(..., description="URL or local path to card image"),
+    image_url: str = Query(..., description="Public HTTPS URL of the card image"),
     game: str = Query("Pokemon", description="Game for grading context"),
 ):
     """
     💰 **$0.10 USDC** — AI Vision Card Grading.
-    
+
     Analyzes centering, corners, edges, surface, and print quality
     using Qwen VL to predict PSA and Beckett grading scores.
-    
-    Returns `402 Payment Required` — sign USDC payment on Base to access.
+
+    Returns `402 Payment Required` — sign a USDC/USDG payment to access.
     """
-    # Validate image URL
-    if image_url.startswith("http") and not _is_safe_url(image_url):
-        raise HTTPException(status_code=400, detail="Image URL must resolve to a public IP address")
+    # CRITICAL FIX 2026-07-26 (audit). This previously read:
+    #     if image_url.startswith("http") and not _is_safe_url(image_url)
+    # — the guard was SKIPPED ENTIRELY for any value not starting with "http".
+    # The param was documented as "URL or local path", and the value flows to
+    # _grade_via_mcp -> the grader's local-file branch (os.path.expanduser +
+    # open), so a PAYING caller could read arbitrary files on this box — .env
+    # included — and the "Image file not found at {p}" error made it a
+    # file-existence oracle even when parsing failed. Local paths are
+    # meaningless for a remote caller; require public HTTPS, matching the
+    # hardening batch-triage (/api/v1/batch-triage) already had.
+    if not image_url.startswith("https://"):
+        raise HTTPException(status_code=400,
+                            detail="image_url must be a public https:// URL")
+    if not _is_safe_url(image_url):
+        raise HTTPException(status_code=400,
+                            detail="image_url must resolve to a public IP address")
 
     result = await asyncio.to_thread(call_mcp_tool, "grade_card", {"image_path": image_url, "game": game})
 
