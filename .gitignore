@@ -23,3 +23,14 @@ aci_adjust.json
 # Internal strategy docs — never publish (GTM tactics stay private)
 docs/research/x402_market_landscape_*.md
 bazaar_keepalive_state.json
+
+# ── Runtime artifacts — NEVER commit (2026-07-26 privacy audit) ──
+# server.log/uvicorn.log carried 146 and 71 distinct client IPs respectively.
+# Client IPs are personal data under GDPR/CCPA; a public repo is not a lawful
+# place for them. Broad globs so a future log can never be added by habit.
+*.log
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.db
+curl_output.txt
