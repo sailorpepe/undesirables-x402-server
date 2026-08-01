@@ -4541,7 +4541,8 @@ async def soul_rating_wallet(request: Request, address: str, calls: int = 5):
             n_open = db.execute("SELECT COUNT(*) FROM soul_predictions WHERE token_id=? AND scored=0",
                                 (tid,)).fetchone()[0]
             recent = db.execute(
-                "SELECT name, direction, as_of, move_pct, hit, push FROM soul_predictions "
+                "SELECT name, direction, as_of, move_pct, hit, push, COALESCE(voided,0) "
+                "FROM soul_predictions "
                 "WHERE token_id=? AND scored=1 ORDER BY as_of DESC, product_id LIMIT ?",
                 (tid, calls)).fetchall() if calls else []
             tot_matured += (agg[0] if agg else 0)
@@ -4557,7 +4558,8 @@ async def soul_rating_wallet(request: Request, address: str, calls: int = 5):
                 "brier": agg[4] if agg else None,
                 "open_calls": n_open,
                 "recent_calls": [{"name": r[0], "direction": r[1], "as_of": r[2], "move_pct": r[3],
-                                  "outcome": ("push" if r[5] else ("hit" if r[4] else "miss"))}
+                                  "outcome": ("void" if r[6] else
+                                              "push" if r[5] else ("hit" if r[4] else "miss"))}
                                  for r in recent],
                 "detail": f"/api/v1/soul-rating/{tid}",
             })
@@ -4604,8 +4606,12 @@ def soul_rating(request: Request, token_id: int):
             "WHERE token_id=? AND scored=0 ORDER BY as_of DESC, product_id", (token_id,)).fetchall()
         # scored history (add-only field, 2026-07-11): the public per-call record —
         # full transparency once predictions mature, and souls can read their own results
+        # voided (scoring rule v2, 2026-07-31) rides along so the outcome renders
+        # as "void", never as a fake miss — a card the market stopped pricing is
+        # struck from the record, not counted against the soul.
         scored = db.execute(
-            "SELECT name, direction, as_of, move_pct, hit, push FROM soul_predictions "
+            "SELECT name, direction, as_of, move_pct, hit, push, COALESCE(voided,0), void_reason "
+            "FROM soul_predictions "
             "WHERE token_id=? AND scored=1 ORDER BY as_of DESC, product_id LIMIT 12",
             (token_id,)).fetchall()
         roots = {r[0]: {"merkle_root": r[1], "tx": r[3]} for r in
@@ -4642,7 +4648,9 @@ def soul_rating(request: Request, token_id: int):
                     "soul. No letter is claimed."),
                 "recent_results": [{"name": r[0], "direction": r[1], "as_of": r[2],
                                     "move_pct": r[3],
-                                    "outcome": ("push" if r[5] else ("hit" if r[4] else "miss"))}
+                                    "outcome": ("void" if r[6] else
+                                                "push" if r[5] else ("hit" if r[4] else "miss")),
+                                    **({"void_reason": r[7]} if r[6] else {})}
                                    for r in scored],
                 "open_predictions": [{"product_id": o[0], "name": o[1], "direction": o[2],
                                       "as_of": o[3], "matures_on": o[4], "lock_hash": o[5],
