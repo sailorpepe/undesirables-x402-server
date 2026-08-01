@@ -1,10 +1,12 @@
 {
-  "contract_address": "0xc159550e9e751d6E75A0A06Bb04cfA2f59aD636B",
+  "contract": "0x6cca6D7727525595D3A5A1197133086507b82f17",
+  "contract_address": "0x6cca6D7727525595D3A5A1197133086507b82f17",
   "deployer": "0x77B82Fe7ADD725017E106CFE6E26Dc8b37C93Fca",
-  "tx_hash": "c14f4125d38dbd4f615c459336233481e50eb73a6bdbb1c36c2622e6885f9b0c",
+  "deployed_at": 1785553714.241398,
+  "audit_patch": "de2b673 (renounce guard)",
+  "supersedes": "0xc159550e9e751d6E75A0A06Bb04cfA2f59aD636B",
   "chain_id": 4441,
-  "block": 15368566,
-  "gas_used": 579545,
-  "deployed_at": 1780502679.220133,
-  "explorer": "https://liteforge.explorer.caldera.xyz/address/0xc159550e9e751d6E75A0A06Bb04cfA2f59aD636B"
+  "deploy_tx": "208b44d0745827...",
+  "first_root_tx": "0c1a77767fc66375df0bfc087dddf37a1f24e0e0a4ee2953dc7c2612e851dcde",
+  "explorer": "https://liteforge.explorer.caldera.xyz/address/0x6cca6D7727525595D3A5A1197133086507b82f17"
 }

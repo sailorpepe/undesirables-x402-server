@@ -1,15 +1,11 @@
 {
-  "contract": "0xe6490a59E13C63AaD0345E842F36CdaC962cC96F",
+  "contract": "0xE49104b3d540CBA4BFFe3B73bc06e910A3A7da4e",
+  "contract_address": "0xE49104b3d540CBA4BFFe3B73bc06e910A3A7da4e",
+  "deployer": "0x77B82Fe7ADD725017E106CFE6E26Dc8b37C93Fca",
+  "deployed_at": 1785553714.240845,
+  "audit_patch": "de2b673 (renounce guard, uint256 categoryId)",
+  "supersedes": "0xe6490a59E13C63AaD0345E842F36CdaC962cC96F",
   "chain_id": 8453,
   "rpc": "alchemy-base-mainnet",
-  "deployed_at": 1785551141.4161541,
-  "deploy_tx": "39d97e6e4177ce63d3b7f8b13874b9cd800c7cc9750ffe724d56bd3ba3a799c2",
-  "first_root_tx": "779f7426b8b636fd75944f9ddb7e5fd723381dc03ca81af5bcccb62715542e5d",
-  "deployer": "0x77B82Fe7ADD725017E106CFE6E26Dc8b37C93Fca",
-  "first_root": "0x7d7c38d0c0eb471ca550da438b4dca3b49b64ee387cd87828e2330bbf5a61da2",
-  "total_products": 286189,
-  "data_date": "2026-07-30",
-  "liteforge_counterpart": "0x96B124f50156589274ADF8F674509374752170Cd",
-  "note": "Base mainnet mirror of the public proof tree (Studio flag 2026-07-30: the tree the verification story depends on was LiteForge-only). merkle_root_updater.py mirrors each new root; Base leg is non-blocking.",
-  "explorer": "https://basescan.org/address/0xe6490a59E13C63AaD0345E842F36CdaC962cC96F"
+  "explorer": "https://basescan.org/address/0xE49104b3d540CBA4BFFe3B73bc06e910A3A7da4e"
 }
