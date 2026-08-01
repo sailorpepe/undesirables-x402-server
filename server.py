@@ -30,7 +30,7 @@ from typing import Optional
 import httpx
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Query, HTTPException, Request, Body
+from fastapi import FastAPI, Query, HTTPException, Request, Body, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, HTMLResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -377,7 +377,38 @@ async def lifespan(app: FastAPI):
 ║  Docs:    http://localhost:{PORT}/docs                 ║
 ╚══════════════════════════════════════════════════════╝
     """)
+
+    # Warm the trending cache in the BACKGROUND (2026-07-30).
+    #
+    # WHY: the enriched trending board costs ~3s cold (25 conformal forecasts)
+    # and ~1ms warm. The cache is in-process, so every restart evicts it — and a
+    # PAYING caller hit that cold path twice today, the second time 7 minutes
+    # after a deploy of mine. Charging someone $0.025 and making them absorb my
+    # restart cost is not acceptable.
+    #
+    # Background, never blocking: startup must not wait on this, and a failure
+    # here must never stop the server booting. Worst case the cache stays cold
+    # and the first caller pays what they already would have.
+    async def _warm():
+        try:
+            import asyncio as _a
+            await _a.sleep(2)          # let the app finish binding first
+            class _R:
+                class _C:
+                    host = "127.0.0.1"
+                client = _C(); headers = {}
+                url = type("U", (), {"path": "/api/v1/trending"})()
+                method = "GET"; state = type("S", (), {})()
+            fn = getattr(trending_cards, "__wrapped__", trending_cards)
+            await fn(_R(), game=None, limit=25, min_price=1.0)
+            print("🔥 trending cache warmed")
+        except Exception as e:
+            print(f"trending warm skipped: {str(e)[:80]}")
+
+    import asyncio as _asyncio
+    _task = _asyncio.create_task(_warm())
     yield
+    _task.cancel()
 
 
 app = FastAPI(
@@ -591,9 +622,22 @@ async def _request_logger(request, call_next):
                     # `organic` retired as a stored field. Anything counting
                     # revenue must classify by payer address deliberately, not
                     # read a boolean we were never entitled to write.
-                    # paid-but-failed: money in, nothing delivered. Flagged so
-                    # it can never be silently counted as a happy sale.
-                    rec["paid_failed"] = response.status_code >= 400
+                    #
+                    # SETTLEMENT IS OBSERVED, NOT INFERRED (fixed 2026-07-28).
+                    # `paid_failed` used to be set from the status code alone
+                    # whenever a payment HEADER was present, which says nothing
+                    # about whether money actually moved. On 2026-07-28 that
+                    # produced a "PAID-BUT-FAILED" page for a request that was
+                    # rejected at param validation and never settled — a refund
+                    # hunt for money we never took. The SDK stamps
+                    # PAYMENT-RESPONSE (or the v1 X-PAYMENT-RESPONSE) on the
+                    # response only when settlement succeeds, so read that
+                    # instead of guessing. Fourth instance of this blindness
+                    # class — every payment-observing condition must be
+                    # ENUMERATED, not assumed.
+                    # `settled` / `paid_failed` are filled in by
+                    # _settlement_finalizer — see the deferred-write note below.
+                    rec["request_failed"] = response.status_code >= 400
                     # Still alert on unknown payers — an unclassified settlement
                     # is exactly the event worth waking up for. The alert says
                     # "unclassified", not "customer".
@@ -602,9 +646,15 @@ async def _request_logger(request, call_next):
                             and payer not in _PAYER_ALERTED):
                         _PAYER_ALERTED.add(payer)
                         _alert_organic_settlement(payer, path)
-            os.makedirs(os.path.dirname(_REQLOG), exist_ok=True)
-            with open(_REQLOG, "a", encoding="utf-8") as f:
-                f.write(json.dumps(rec) + "\n")
+            # DEFERRED WRITE (2026-07-29). This middleware is registered FIRST,
+            # which in Starlette makes it the INNERMOST — its post-processing runs
+            # BEFORE x402_payment_gate adds PAYMENT-RESPONSE on the way out. So
+            # settlement is structurally invisible from here, and yesterday's
+            # `settled` flag was ALWAYS False, which silently made paid_failed
+            # never fire. Verified empirically with a 3-middleware probe.
+            # The record is stashed and written by _settlement_finalizer, which is
+            # registered LAST and therefore sees the final headers.
+            request.state._oracle_rec = rec
         except Exception:
             pass
     return response
@@ -625,6 +675,47 @@ try:
 
     # Route config: only paid endpoints require USDC payment
     x402_routes = {
+        "POST /api/v1/grade/upload": {
+            "description": "Grade a trading card from UPLOADED IMAGE BYTES — multipart or base64, no public URL required. Accepts JPEG, PNG and HEIC/HEIF so iPhone photos work directly. The image is never stored: it is decoded in a temp directory deleted immediately after grading, and EXIF (including GPS) is stripped on decode. Same 3-stage pipeline and price as GET /api/v1/grade.",
+            "mimeType": "application/json",
+            "serviceName": "The Undesirables Oracle",
+            "tags": ["card-grading", "image-upload", "heic", "computer-vision", "privacy"],
+            "iconUrl": "https://the-undesirables.com/favicon.ico",
+            "accepts": {
+                "scheme": "exact",
+                "payTo": PAYMENT_ADDRESS,
+                "price": "$0.10",
+                "network": NETWORK,
+            },
+            # Declared as form-data, which is what the handler actually takes
+            # (File + Form). Getting this wrong is how POST /api/v1/batch-triage
+            # ended up advertising queryParams for a Body() endpoint.
+            "extensions": declare_discovery_extension(
+                input={"image_base64": "<base64 image bytes>", "game": "Pokemon"},
+                body_type="form-data",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "file": {"type": "string", "format": "binary",
+                                 "description": "Card image: JPEG, PNG, HEIC or HEIF"},
+                        "image_base64": {"type": "string",
+                                         "description": "Base64 image bytes — alternative to `file`"},
+                        "game": {"type": "string",
+                                 "description": "TCG game for grading context (default: Pokemon)"},
+                    },
+                    "required": []
+                },
+                output=OutputConfig(
+                    example={"status": "ok", "report": {"overall_grade": 8.5},
+                             "privacy": "image not stored; deleted after grading; EXIF stripped"},
+                    schema={"type": "object",
+                            "properties": {"status": {"type": "string"},
+                                           "report": {"type": "object"},
+                                           "privacy": {"type": "string"}},
+                            "required": ["status"]}
+                )
+            ),
+        },
         "GET /api/v1/grade": {
             "description": "Grade any physical Pokémon, Magic: The Gathering, Yu-Gi-Oh, or Digimon trading card using a 3-stage AI pipeline: (1) Qwen Vision LLM analyzes corners, edges, and surface defects, (2) OpenCV measures exact centering ratios programmatically, (3) BGS professional capping algorithm adjusts the final grade. Returns PSA/Beckett-calibrated subgrades and an overall condition score. Accepts card image URLs or base64.",
             "mimeType": "application/json",
@@ -1002,6 +1093,14 @@ try:
                     },
                     "required": ["image_urls"]
                 },
+                # Found 2026-07-30 while chasing the bazaar startup warnings, NOT
+                # in the external audit: this POST route advertised `queryParams`
+                # while its handler takes Body(...). An agent following the
+                # manifest would send query params to a JSON-body endpoint and get
+                # a 422 — the SAME failure the audit caught on /api/v1/recommend
+                # (BUG-1), sitting undetected on an endpoint nobody calls.
+                # body_type flips the declaration to bodyType/body.
+                body_type="json",
                 output=OutputConfig(
                     example={"status": "ok", "tool": "batch_triage", "data": {"total_cards": 5, "total_expected_profit": 125.00, "ranked": []}},
                     schema={"type": "object", "properties": {"status": {"type": "string"}, "data": {"type": "object"}}, "required": ["status"]}
@@ -1366,27 +1465,69 @@ async def root():
         "network": NETWORK,
         "endpoints": {
             "free": [
-                {"path": "/api/v1/search", "description": "Search 446K+ TCG products — names and IDs only (3 results max)"},
-                {"path": "/api/v1/accuracy", "description": "Public prediction accuracy dashboard (MAE, hit rates)"},
+                {"path": "/api/v1/search", "description": "Search 449K+ TCG products — names, IDs and market price (limit 1-50, default 10)"},
+                {"path": "/api/v1/accuracy", "description": "Public grading-report count + the on-chain forecast track record (open predictions, committed roots, first maturity date)"},
                 {"path": "/api/v1/accuracy/report", "method": "POST", "description": "Report actual grade vs prediction"},
                 {"path": "/api/v1/alerts/subscribe", "method": "POST", "description": "Subscribe to price alert webhooks"},
                 {"path": "/api/v1/alerts", "description": "List active price alerts"},
-                {"path": "/api/v1/alerts/{id}", "method": "DELETE", "description": "Unsubscribe from alert"},
+                {"path": "/api/v1/alerts/{alert_id}", "method": "DELETE", "description": "Unsubscribe from alert"},
                 {"path": "/api/v1/alerts/check", "method": "POST", "description": "Trigger alert check cycle"},
-                {"path": "/api/v1/recommend", "method": "POST", "description": "AI workflow advisor — tells you which endpoints to call and in what order"},
+                {"path": "/api/v1/recommend", "method": "GET or POST", "description": "AI workflow advisor — tells you which endpoints to call and in what order. `goal` as a query param (GET) or JSON body field (POST); both return the same response."},
                 {"path": "/api/v1/phygital/stats", "description": "Tokenized card market overview — 267K+ cards, categories, grade distribution"},
                 {"path": "/api/v1/phygital/search", "description": "Search tokenized graded cards on Courtyard.io"},
                 {"path": "/api/v1/collection", "description": "The Undesirables (UNDSR) NFT — live supply + public-mint status on Ethereum mainnet"},
                 {"path": "/api/v1/collection/wallet/{address}", "description": "UNDSR mint eligibility + holdings for a wallet"},
                 {"path": "/api/v1/collection/prepare-mint", "description": "Build an unsigned UNDSR mint transaction — you sign with your own wallet, we never hold keys"},
                 {"path": "/chart/{product_id}.png", "description": "Conformal forecast cone as a PNG — embeddable image, ?days=7..30 (free, no payment)"},
+
+                # Added 2026-07-30, all pre-existing and live. The root listing
+                # had drifted to a hand-curated subset: 43 /api/v1 routes were
+                # being served and 29 advertised, so the free tier UNDERSTATED
+                # itself by 13 — including /forecast, /price, /history and both
+                # Merkle proof endpoints, which are the entire "check our work
+                # yourself" story. Every count-vs-count check passed the whole
+                # time because a route missing from every surface is invisible
+                # to all of them. stack_healthcheck.py now diffs openapi.json
+                # against this list so the gap cannot reopen silently.
+                {"path": "/api/v1/price", "description": "Current market price for one product_id — the cheapest way to check a card"},
+                {"path": "/api/v1/prices", "description": "Batch price lookup — ?ids=1,2,3. Returns one entry per (product_id, sub_type); a product may have several"},
+                {"path": "/api/v1/history", "description": "Daily price history for a product_id — ?days=N"},
+                {"path": "/api/v1/forecast", "description": "The free forecast board — 200 cards with conformal bands and VaR. Takes no parameters; returns the whole board"},
+                {"path": "/api/v1/forecast/{product_id}", "description": "Conformal forecast for one card — 50/80/90/95% bands, VaR95/99, regime, and the risk basis note"},
+                {"path": "/api/v1/merkle/proof", "description": "Merkle proof that a price we published is in the root committed on-chain that day — verify us without trusting us"},
+                {"path": "/api/v1/graded", "description": "Graded-price medians by grade for a product_id (PSA/BGS/CGC)"},
+                {"path": "/api/v1/graded/proof", "description": "Merkle proof for a graded-price entry — ?product_id=&grade=PSA+10"},
+                {"path": "/api/v1/graded-bluechips", "description": "Graded blue-chip board — the cards with the deepest graded price history"},
+                {"path": "/api/v1/ebay-comps", "description": "Recent eBay sold comps for a search query — real completed sales, not asks"},
+                {"path": "/api/v1/soul-rating", "description": "Soul leaderboard — every rated Undesirable soul with its current standing"},
+                {"path": "/api/v1/soul-rating/{token_id}", "description": "One soul's rating, call history and record"},
+                {"path": "/api/v1/soul-rating/wallet/{address}", "description": "Soul ratings for every soul held by a wallet"},
+
+                # 2026-07-30. This route was live, unpaywalled, and absent from
+                # both root and the x402 manifest, while its own docstring
+                # advertised "$0.25" — 3 callers got it free before anyone
+                # noticed. sailorpepe's call was to declare it FREE rather than
+                # paywall it: it returns a holder's OWN vaulted cards, and
+                # charging someone to look at what they already own is the wrong
+                # trade for a quarter. The "$0.25" is stripped from the docstring
+                # below so the two surfaces cannot disagree again.
+                {"path": "/api/v1/wallet/portfolio", "description": "Vault portfolio valuation — every Courtyard.io vaulted card in a Polygon wallet with raw and grade-adjusted values. Free."},
             ],
             "paid": [
                 {"path": "/api/v1/grade", "price": "$0.10", "description": "3-stage AI card grading (Vision + OpenCV + BGS capping) with ROI verdict"},
+                # Added 2026-07-30. Omitting it made the root advertise 14 paid
+                # endpoints when 15 exist — caught by an external re-test, not by
+                # the healthcheck, which only compares root's own count against
+                # root's own list and so cannot see a route missing from both.
+                {"path": "/api/v1/grade/upload", "price": "$0.10", "method": "POST", "description": "Grade from uploaded image bytes (multipart or base64, HEIC supported) — no public URL needed; image never stored"},
                 {"path": "/api/v1/verdict", "price": "$0.30", "description": "The Decision Endpoint — comps + calibrated forecast + grade-ROI + market stance in one call"},
                 {"path": "/api/v1/grade-or-not", "price": "$0.10", "description": "Grade-or-Not ROI engine — should I grade this card?"},
                 {"path": "/api/v1/simulate", "price": "$0.015", "description": "conformal-calibrated risk forecast (Monte Carlo opt-in)"},
-                {"path": "/api/v1/trending", "price": "$0.025", "description": "Top movers by sales volume and price velocity"},
+                # "sales volume" removed 2026-07-30: the endpoint's own
+                # ranking_note already disclaims volume and view counts as not
+                # present in this dataset. The root listing was advertising
+                # exactly what the payload refuses to claim.
+                {"path": "/api/v1/trending", "price": "$0.025", "description": "Top movers by price velocity (absolute drift), each with the same conformal bands and VaR the free board uses"},
                 {"path": "/api/v1/market", "price": "$0.025", "description": "Daily market snapshot with top movers"},
                 {"path": "/api/v1/batch-triage", "price": "$0.50", "method": "POST", "description": "Grade up to 20 cards, ranked by expected profit"},
                 {"path": "/api/v1/portfolio-optimize", "price": "$0.50", "description": "Markowitz portfolio optimization over conformal forecasts"},
@@ -1622,7 +1763,7 @@ _LLMS_TXT = """# The Undesirables — TCG Price & Risk Oracle
 
 > Real-math stochastic finance for trading cards. We forecast card prices with
 > conformal-calibrated bands — honest, MEASURED VaR, not assumed — and publish
-> the hit rate. "Real math. Not an API wrapper."
+> the forecast track record on-chain. "Real math. Not an API wrapper."
 
 ## What this is
 A live oracle over ~437K trading-card products (Pokemon, Magic: The Gathering,
@@ -1698,8 +1839,9 @@ GET /api/v1/forecast/{product_id} (resolving a name via /api/v1/search first).
 
 ## Notes for agents
 - Card image: https://product-images.tcgplayer.com/fit-in/437x437/{product_id}.jpg
-- Paid endpoints use x402 micropayments on Base. License: BUSL-1.1 (no competing
-  TCG oracle services).
+- Paid endpoints use x402 micropayments — USDC on Base, USDC on Solana, or USDG
+  on Robinhood Chain; the 402 offers all three and the agent picks a leg.
+  License: BUSL-1.1 (no competing TCG oracle services).
 
 Contact: @undesirables_ai on X
 """
@@ -2109,7 +2251,7 @@ async def ai_plugin():
             "(5) optimize a card portfolio for risk-adjusted returns, "
             "(6) monitor trending cards by sales volume and price velocity, "
             "(7) batch-grade multiple cards and rank by profit potential. "
-            "All paid endpoints use x402 USDC micropayments on Base. "
+            "Paid endpoints use x402 micropayments (USDC on Base, USDC on Solana, or USDG on Robinhood Chain). "
             "Free search, market data, accuracy dashboard, and price alerts available without payment."
         ),
         "auth": {"type": "none"},
@@ -2259,7 +2401,7 @@ async def agent_card():
             {
                 "id": "accuracy_dashboard",
                 "name": "Prediction Accuracy Dashboard",
-                "description": "Public MAE, hit rates, and grade distribution. Free.",
+                "description": "Public grading-report count plus the on-chain forecast track record: open predictions, weekly roots committed, and the first maturity date. Free.",
                 "tags": ["accuracy", "trust", "transparency", "free"],
             },
             {
@@ -2319,7 +2461,7 @@ WORKFLOW_CATALOG = {
     },
     "evaluate_collection": {
         "name": "Evaluate a collection of cards",
-        "triggers": ["collection", "batch", "bulk", "multiple cards", "20 cards", "triage", "which ones", "sort by profit"],
+        "triggers": ["collection", "batch", "bulk", "multiple cards", "20 cards", "triage", "which ones", "sort by profit", "raw", "raw cards", "what should i do"],
         "steps": [
             {"endpoint": "/api/v1/batch-triage", "price": "$0.50", "purpose": "Grade all cards and rank by expected profit"},
             {"endpoint": "/api/v1/portfolio-optimize", "price": "$0.50", "purpose": "Optimize allocation across your best cards"},
@@ -2357,11 +2499,28 @@ WORKFLOW_CATALOG = {
 
 
 @app.post("/api/v1/recommend", tags=["Free"])
+@app.get("/api/v1/recommend", tags=["Free"])
 @limiter.limit("30/minute")
 async def recommend_workflow(
     request: Request,
-    goal: str = Query(..., description="What do you want to accomplish? Natural language description."),
+    # BUG-1 (external audit 2026-07-30): `goal` was QUERY-only on a POST route.
+    # The MCP wrapper sends it in a JSON body, so FastAPI saw no query param and
+    # returned 422 on EVERY call — the tool had never worked through MCP once.
+    # Now accepted from either place, and GET is allowed too, so all three of the
+    # shapes an agent might reasonably try succeed instead of 404/405/422:
+    #     GET  /api/v1/recommend?goal=...
+    #     POST /api/v1/recommend?goal=...
+    #     POST /api/v1/recommend  {"goal": "..."}
+    # Query wins when both are supplied; body is the documented contract.
+    goal: str = Query(None, description="What do you want to accomplish? Natural language description."),
+    body_goal: str = Body(None, embed=True, alias="goal",
+                          description="Same as the `goal` query param; use either."),
 ):
+    goal = goal or body_goal
+    if not goal or not goal.strip():
+        raise HTTPException(
+            status_code=422,
+            detail="provide `goal` — as a query param (?goal=...) or a JSON body {\"goal\": \"...\"}")
     """
     🆓 **FREE** — AI Workflow Advisor.
 
@@ -2377,13 +2536,30 @@ async def recommend_workflow(
     """
     goal_lower = goal.lower()
 
-    # Score each workflow by keyword matches
+    # BUG-11 (external audit 2026-07-30): the sort key and the DISPLAYED number
+    # were different quantities. Ranking used the raw match count while
+    # `confidence` reported score/len(triggers), so a workflow with more trigger
+    # words showed a LOWER confidence at the same raw score — producing a
+    # top_recommendation (0.11) scoring below its own alternative (0.17).
+    #
+    # Both now derive from one value. Confidence is the share of a workflow's
+    # OWN triggers that the goal hit, with a longest-match bonus so a specific
+    # multi-word phrase ("worth grading") outweighs an incidental single word
+    # ("card"). Normalising by trigger count is what makes workflows with big
+    # trigger lists comparable to small ones — without it, verbose entries win
+    # by sheer vocabulary size.
     scored = []
     for wf_id, wf in WORKFLOW_CATALOG.items():
-        score = sum(1 for trigger in wf["triggers"] if trigger in goal_lower)
-        if score > 0:
-            scored.append((score, wf_id, wf))
+        hits = [t for t in wf["triggers"] if t in goal_lower]
+        if not hits:
+            continue
+        coverage = len(hits) / len(wf["triggers"])
+        # a matched 2+ word phrase is far stronger evidence than a bare noun
+        specificity = max(len(t.split()) for t in hits)
+        conf = min(0.99, coverage * (1.0 + 0.6 * (specificity - 1)))
+        scored.append((conf, wf_id, wf))
 
+    # Sort by the SAME number that is reported. This is the whole fix.
     scored.sort(reverse=True, key=lambda x: x[0])
 
     if not scored:
@@ -2405,7 +2581,7 @@ async def recommend_workflow(
         recommendations.append({
             "workflow_id": wf_id,
             "name": wf["name"],
-            "confidence": round(score / len(wf["triggers"]), 2),
+            "confidence": round(score, 2),
             "total_cost": wf["total_cost"],
             "steps": wf["steps"],
         })
@@ -2610,13 +2786,31 @@ def search_tcg_products(
                 "data": {"results": results, "total": len(results)},
             }
         else:
-            # Widget gets 8 results with names; external agents get 3
-            max_free = 8 if is_widget else 3
+            # BUG-8/BUG-9 (external audit 2026-07-30).
+            #
+            # BUG-8: `limit` is a declared, validated argument (1-50) that was
+            # then IGNORED — external callers were silently capped at 3 with no
+            # signal that results had been withheld. limit=10 returned 3 and said
+            # total_available=10 without explaining the gap.
+            #
+            # BUG-9: the docstring promised "current market prices", the response
+            # withheld them, and the gate was pointless anyway — /api/v1/forecast
+            # is FREE, unauthenticated, and returns the full price plus the entire
+            # conformal forecast for any card. Verified live: Base Set Charizard
+            # 42382 -> price 800.43. We were withholding a number we give away one
+            # endpoint over, which costs a real caller a round trip and buys us
+            # nothing.
+            #
+            # So: honour `limit`, and include the price. The widget keeps its
+            # richer category field; nothing else is gated.
+            max_free = min(limit, 50)
             limited = []
             for r in rows[:max_free]:
                 item = {
                     "product_id": r[0],
                     "name": r[1] or r[2],
+                    # r[4] = market_price from the LEFT JOIN on price_history
+                    "market_price_usd": round(float(r[4]), 2) if r[4] else None,
                     # The SET is what distinguishes printings — a "Charizard" is
                     # worthless information without it (Base Set vs Base Set 2 vs
                     # Shadowless are wildly different cards). Added 2026-07-21
@@ -2633,7 +2827,9 @@ def search_tcg_products(
                 "query": query,
                 "results_shown": len(limited),
                 "total_available": len(rows),
-                "note": "Free tier shows top results without pricing. Use paid endpoints for full data." if not is_widget else None,
+                "note": (f"Showing {len(limited)} of {len(rows)} matches (limit={limit}, "
+                         f"max 50). Raise `limit` for more."
+                         if len(rows) > len(limited) else None),
                 "data": {"results": limited},
             }
             # Tell the caller HOW to search when we came up empty rather than
@@ -2780,6 +2976,117 @@ def price_history(
 
 
 # ---------------------------------------------------------------------------
+# BATCH PRICES — Free tier. Built 2026-07-27 for the Studio's public soul chat
+# (the-undesirables.com/agent), which had no REST route to price arbitrary
+# product_ids: /api/litvm covers only the 50 blue-chips and the MCP server needs
+# a session handshake, too heavy for a hot chat path.
+#
+# ONE ROW PER (product_id, sub_type) — NOT one row per product_id, and this is
+# the whole reason the endpoint is careful. 645 products carry multiple sub_types
+# on the same day and their prices diverge wildly: product 83514 is $6.83 Normal
+# and $68.29 Holofoil. Collapsing to "the" price would silently coin-flip a 10x
+# error into a public chat. Callers with a single-sub_type product (99.7% of the
+# catalogue) get exactly the flat shape they asked for; the rest get the truth
+# and can choose.
+# ---------------------------------------------------------------------------
+
+MAX_BATCH_IDS = 20
+
+
+@app.get("/api/v1/prices", tags=["Free"])
+@limiter.limit("120/minute")
+def batch_prices(
+    request: Request,
+    ids: str = Query(..., description="Comma-separated product IDs, max 20"),
+):
+    """🆓 **FREE** — Latest market price for up to 20 product IDs at once.
+
+    Returns one entry per (product_id, sub_type). A product with both Normal and
+    Holofoil printings returns TWO entries with different prices — check
+    `sub_type` rather than assuming the first hit is the one you meant.
+
+    `missing` lists any requested IDs with no price on record, so a caller can
+    tell "we don't have it" apart from "it's worth nothing".
+    """
+    try:
+        wanted, seen = [], set()
+        for tok in ids.split(","):
+            tok = tok.strip()
+            if not tok:
+                continue
+            pid = int(tok)            # raises on junk -> 422 below
+            if pid not in seen:
+                seen.add(pid)
+                wanted.append(pid)
+    except ValueError:
+        raise HTTPException(status_code=422,
+                            detail="ids must be comma-separated integers")
+    if not wanted:
+        raise HTTPException(status_code=422, detail="no ids provided")
+    if len(wanted) > MAX_BATCH_IDS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"max {MAX_BATCH_IDS} ids per request, got {len(wanted)}")
+
+    conn = _get_db()
+    if not conn:
+        raise HTTPException(status_code=503, detail="TCG database not available")
+
+    ph = ",".join("?" * len(wanted))
+    rows = conn.execute(
+        f"""
+        SELECT p.product_id, c.name, p.sub_type, p.market_price, p.low_price,
+               p.date, c.image_url
+        FROM price_history p
+        LEFT JOIN cards c ON c.product_id = p.product_id
+        WHERE p.product_id IN ({ph})
+          AND p.market_price > 0
+          AND p.date = (
+                SELECT MAX(date) FROM price_history
+                WHERE product_id = p.product_id AND market_price > 0
+              )
+        ORDER BY p.product_id, p.sub_type
+        """,
+        wanted,
+    ).fetchall()
+
+    # Our stored image_url is populated for only 1,688 of 448,806 cards (0.4%),
+    # so it is useless to build a UI against. TCGplayer's CDN path is derivable
+    # from product_id and returned 200 for every product tested, so fall back to
+    # it and label which one the caller got — a derived URL is a guess about
+    # somebody else's CDN and the caller deserves to know that.
+    data = [{
+        "product_id": r[0],
+        "name": r[1],
+        "sub_type": r[2] or "Normal",
+        "market_price": r[3],
+        # NOT a floor: low_price exceeds market_price in ~8.6% of rows, so do
+        # not render it as "as low as" without comparing the two first.
+        "low_price": r[4] or None,
+        "as_of": r[5],
+        "image_url": r[6] or
+        f"https://tcgplayer-cdn.tcgplayer.com/product/{r[0]}_in_1000x1000.jpg",
+        "image_source": "stored" if r[6] else "derived",
+    } for r in rows]
+
+    found = {r[0] for r in rows}
+    return JSONResponse(
+        content={
+            "status": "ok",
+            "count": len(data),
+            "requested": len(wanted),
+            "missing": [p for p in wanted if p not in found],
+            "note": ("one entry per (product_id, sub_type); a product may appear "
+                     "more than once with different prices"),
+            "data": data,
+        },
+        # Prices move once a day, so a 10-minute edge cache costs nothing and
+        # keeps a chat path off the DB.
+        headers={"Cache-Control": "public, max-age=600"},
+    )
+
+
+# ---------------------------------------------------------------------------
 # PREDICTION ACCURACY TRACKER — Free tier, builds trust moat
 # ---------------------------------------------------------------------------
 ACCURACY_DB = Path(__file__).parent / "accuracy.sqlite"
@@ -2870,6 +3177,70 @@ async def report_actual_grade(
     }
 
 
+
+def _forecast_track_record():
+    """The oracle's OWN scored predictions — the track record that actually exists.
+
+    BUG-10 (external audit 2026-07-30): /api/v1/accuracy read ONLY
+    `grade_predictions`, a table of USER-SUBMITTED PSA outcomes which has zero
+    rows and probably always will — it asks strangers to mail cards to a grader
+    and come back months later to tell us. Meanwhile the oracle runs a real,
+    already-committed scoring pipeline: weekly soul predictions locked behind
+    merkle roots on Base and LiteForge, 30-day maturity, hit/miss/push scoring.
+    The auditor called this "the highest-leverage credibility fix in the list"
+    and was right: the proof of skill existed on-chain while the endpoint meant
+    to surface it pointed at an empty table.
+
+    Returns None when nothing has matured, so the caller can say so plainly
+    rather than implying a track record that does not exist yet.
+    """
+    try:
+        db = sqlite3.connect(f"file:{os.path.join(os.path.dirname(os.path.abspath(__file__)), 'soul_predictions.sqlite')}?mode=ro", uri=True)
+        n, hits, pushes = db.execute(
+            "SELECT COUNT(*), SUM(CASE WHEN push=0 AND hit=1 THEN 1 ELSE 0 END), "
+            "SUM(push) FROM soul_predictions WHERE scored=1").fetchone()
+        if not n:
+            open_n, first = db.execute(
+                "SELECT COUNT(*), MIN(matures_on) FROM soul_predictions WHERE scored=0"
+            ).fetchone()
+            roots = db.execute("SELECT COUNT(*) FROM merkle_roots").fetchone()[0]
+            db.close()
+            return {"status": "no_matured_predictions",
+                    "open_predictions": open_n,
+                    "first_maturity": first,
+                    "weekly_roots_committed": roots,
+                    "note": ("Predictions are locked and merkle-committed on-chain "
+                             "BEFORE they can resolve. Nothing has matured yet, so no "
+                             "hit rate is claimed.")}
+        rated = n - (pushes or 0)
+        rose = db.execute("SELECT COUNT(*) FROM soul_predictions WHERE scored=1 "
+                          "AND push=0 AND move_pct>0").fetchone()[0]
+        roots = db.execute("SELECT COUNT(*) FROM merkle_roots WHERE tx_hash IS NOT NULL"
+                           ).fetchone()[0]
+        db.close()
+        hr = (hits or 0) / rated if rated else None
+        base = rose / rated if rated else None
+        return {
+            "status": "ok",
+            "scored_predictions": n,
+            "rated_ex_push": rated,
+            "pushes": pushes or 0,
+            "hit_rate": round(hr, 4) if hr is not None else None,
+            # A hit rate without its baseline is not interpretable: in a rising
+            # market, always saying "up" scores well and means nothing.
+            "baseline_rate_all_up": round(base, 4) if base is not None else None,
+            "skill_vs_baseline": round(hr - base, 4) if (hr is not None and base is not None) else None,
+            "weekly_roots_committed_onchain": roots,
+            "interpretation": (
+                "Judge `skill_vs_baseline`, not `hit_rate`. Predictions were merkle-"
+                "committed before they could resolve, so this record cannot be edited "
+                "after the fact — see /api/v1/soul-rating/{token_id} for per-soul detail "
+                "and the on-chain commitment tx."),
+        }
+    except Exception as e:
+        return {"status": "unavailable", "detail": str(e)[:120]}
+
+
 @app.get("/api/v1/accuracy", tags=["Free"])
 @limiter.limit("60/minute")
 async def accuracy_dashboard(
@@ -2910,8 +3281,12 @@ async def accuracy_dashboard(
         db.close()
         return {
             "status": "ok",
-            "message": "No grade reports yet. Use POST /api/v1/accuracy/report to submit yours!",
+            "message": ("No user-submitted PSA grade reports yet — that table depends on "
+                        "strangers mailing cards to a grader and reporting back. The "
+                        "oracle's OWN scored track record is in `forecast_track_record` "
+                        "below and is committed on-chain."),
             "total_reports": 0,
+            "forecast_track_record": _forecast_track_record(),
         }
 
     mae = round(row[1], 2)
@@ -2943,6 +3318,7 @@ async def accuracy_dashboard(
 
     return {
         "status": "ok",
+        "forecast_track_record": _forecast_track_record(),
         "accuracy": {
             "total_reports": total,
             "mean_absolute_error": mae,
@@ -3547,6 +3923,108 @@ def _get_calibrated_params(card_name: str) -> dict:
 
 # PAID TIER — x402 payment required
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# BUG-16 (external audit 2026-07-30): grade_card required a PUBLIC https URL, so
+# any agent holding local image bytes could not call it at all — which is the
+# single most common real case, a photo on someone's phone. Most agent runtimes
+# cannot stand up public hosting to work around it. This accepts the bytes
+# directly, as multipart or base64.
+#
+# PRIVACY — sailorpepe, 2026-07-30: "we dont want to store peoples data."
+# Nothing here is persisted:
+#   * bytes land in a TemporaryDirectory that is destroyed in a finally block,
+#     so it goes away on success, on exception, and on client disconnect
+#   * the decode RE-ENCODES to JPEG, which DROPS ALL EXIF. iPhone photos carry
+#     GPS coordinates; those must not reach the model, a log, or disk
+#   * no filename, no image bytes and no dimensions are logged
+#   * nothing is written to any database
+# HEIC/HEIF is decoded server-side via pillow_heif (already installed). Every
+# iPhone photo is HEIC by default and pushing that conversion onto callers is a
+# needless funnel loss — the auditor could not install a decoder in two separate
+# sandboxes, which is exactly the point.
+# ---------------------------------------------------------------------------
+MAX_UPLOAD_BYTES = 15 * 1024 * 1024
+
+
+def _decode_to_jpeg(raw: bytes, dest: str) -> None:
+    """Decode any supported image (incl. HEIC/HEIF) and write a clean JPEG.
+
+    Re-encoding is deliberate, not incidental: it is what strips EXIF. Do not
+    "optimise" this into a straight byte copy — that would carry GPS location
+    from a phone photo through to the grader and onto disk.
+    """
+    from io import BytesIO
+    try:
+        import pillow_heif
+        pillow_heif.register_heif_opener()
+    except Exception:
+        pass                                  # non-HEIC input still works
+    from PIL import Image
+    img = Image.open(BytesIO(raw))
+    if img.mode not in ("RGB", "L"):
+        img = img.convert("RGB")
+    clean = Image.new(img.mode, img.size)     # new canvas => no metadata carried
+    clean.putdata(list(img.getdata()))
+    clean.save(dest, format="JPEG", quality=92)
+
+
+@app.post("/api/v1/grade/upload", tags=["Paid — $0.10"])
+@limiter.limit("20/minute")
+async def grade_card_upload(
+    request: Request,
+    file: UploadFile = File(None, description="Card image (JPEG/PNG/HEIC/HEIF)"),
+    image_base64: str = Form(None, description="Base64 image bytes, alternative to `file`"),
+    game: str = Form("Pokemon", description="TCG game for grading context"),
+):
+    """💰 **$0.10 USDC** — Grade a card from UPLOADED BYTES (no public URL needed).
+
+    Send either a multipart `file` or a base64 `image_base64`. Accepts JPEG, PNG
+    and **HEIC/HEIF** — iPhone photos work directly, no conversion on your side.
+
+    **Your image is never stored.** It is decoded in a temporary directory that
+    is deleted immediately after grading, EXIF (including GPS) is stripped during
+    decode, and nothing is written to any database or log.
+    """
+    import base64 as _b64
+    import shutil
+    import tempfile
+
+    raw = None
+    if file is not None:
+        raw = await file.read()
+    elif image_base64:
+        try:
+            raw = _b64.b64decode(image_base64, validate=False)
+        except Exception:
+            raise HTTPException(status_code=422, detail="image_base64 is not valid base64")
+    if not raw:
+        raise HTTPException(
+            status_code=422,
+            detail="provide either a multipart `file` or `image_base64`")
+    if len(raw) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"image exceeds {MAX_UPLOAD_BYTES // (1024*1024)}MB")
+
+    tmpdir = tempfile.mkdtemp(prefix="undsr_grade_")
+    try:
+        dest = os.path.join(tmpdir, "card.jpg")
+        try:
+            _decode_to_jpeg(raw, dest)
+        except Exception as e:
+            raise HTTPException(
+                status_code=422,
+                detail=f"could not decode image (JPEG/PNG/HEIC supported): {str(e)[:100]}")
+        result = await asyncio.to_thread(
+            call_mcp_tool, "grade_card", {"image_path": dest, "game": game})
+        if isinstance(result, dict):
+            result.setdefault("privacy", "image not stored; deleted after grading; EXIF stripped")
+        return result
+    finally:
+        # Runs on success, on HTTPException, and on client disconnect.
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
 @app.get("/api/v1/grade", tags=["Paid — $0.10"])
 async def grade_card(
     image_url: str = Query(..., description="Public HTTPS URL of the card image"),
@@ -3845,7 +4323,23 @@ def _agent_obj(name, product_id, game, price, as_of, regime, point, low90, high9
     price = float(price)
     move_pct = round((point / price - 1) * 100, 2) if price else 0.0
     band50_pct = round((p75 - point) / price * 100, 2) if price else 0.0
+    # BUG-13/14 (external audit 2026-07-30) — verified, and the audit is HALF right.
+    #
+    # NOT A BUG: var95_pct is not supposed to equal low90. `low90` is the 5th
+    # percentile of the two-sided 90% band, fit at nominal coverage. `var95_pct`
+    # is a SEPARATE one-sided downside bound deliberately fit at 0.96, not 0.95
+    # (see conformal_calibrate.fit_bundle: "a SOLD VaR must never under-protect").
+    # The ~1.8pt gap the audit flagged IS that safety cushion doing its job.
+    # Changing it to match low90 would silently weaken the risk number we sell.
+    #
+    # REAL BUG: the BASIS was inconsistent. The band is symmetric about `point`,
+    # but band90_pct divided by `price`, so the reported 24.69% did not equal the
+    # actual half-width about point (21.76%). Both bases are now emitted
+    # explicitly instead of one ambiguous scalar.
     band90_pct = round((high90 - point) / price * 100, 2) if price else 0.0
+    band90_lo_pct = round((low90 - price) / price * 100, 2) if price else 0.0
+    band90_hi_pct = round((high90 - price) / price * 100, 2) if price else 0.0
+    band90_halfwidth_pct = round((high90 - point) / point * 100, 2) if point else 0.0
     drop = round((1 - prob_up) * 100)
     plain = (f"~{drop}% chance it's below today's ${price:,.0f} in 30 days "
              f"(median ${point:,.0f}, {move_pct:+.1f}%). Safe-Hold {safe}, Momentum {mom}.")
@@ -3854,6 +4348,16 @@ def _agent_obj(name, product_id, game, price, as_of, regime, point, low90, high9
         "as_of": as_of, "regime": regime, "horizon": 30,
         "point": round(point, 2), "move_pct": move_pct, "prob_up": round(prob_up, 4),
         "band50_pct": band50_pct, "band90_pct": band90_pct,
+        # Explicit bases so no caller has to guess which denominator was used.
+        "band90_lo_pct": band90_lo_pct,          # low90 vs CURRENT PRICE
+        "band90_hi_pct": band90_hi_pct,          # high90 vs CURRENT PRICE
+        "band90_halfwidth_pct": band90_halfwidth_pct,   # half-width vs POINT
+        "risk_basis_note": (
+            "band*_pct are relative to CURRENT PRICE; band90_halfwidth_pct is "
+            "relative to POINT (the band is symmetric about point). var95_pct is "
+            "NOT low90 restated: it is a separate one-sided downside bound fit at "
+            "0.96 coverage so realised exceedance stays at or under 5% — it is "
+            "intentionally more conservative than the 5th percentile of the band."),
         "var95_pct": var95_pct, "var99_pct": var99_pct,
         "low90": round(low90, 2), "high90": round(high90, 2),
         "safe_hold": safe, "momentum": mom, "drift_spike": bool(spike),
@@ -4031,7 +4535,8 @@ async def soul_rating_wallet(request: Request, address: str, calls: int = 5):
     try:
         souls, tot_matured, tot_hits, tot_open = [], 0, 0, 0
         for tid in token_ids:
-            agg = db.execute("SELECT matured, hits, pushes, hit_rate, brier, rating FROM soul_ratings "
+            agg = db.execute("SELECT matured, hits, pushes, hit_rate, brier, rating, "
+                         "baseline_rate, skill FROM soul_ratings "
                              "WHERE token_id=?", (tid,)).fetchone()
             n_open = db.execute("SELECT COUNT(*) FROM soul_predictions WHERE token_id=? AND scored=0",
                                 (tid,)).fetchone()[0]
@@ -4091,7 +4596,8 @@ def soul_rating(request: Request, token_id: int):
     if not db:
         raise HTTPException(status_code=503, detail="soul ratings not initialized")
     try:
-        agg = db.execute("SELECT matured, hits, pushes, hit_rate, brier, rating FROM soul_ratings "
+        agg = db.execute("SELECT matured, hits, pushes, hit_rate, brier, rating, "
+                         "baseline_rate, skill FROM soul_ratings "
                          "WHERE token_id=?", (token_id,)).fetchone()
         opens = db.execute(
             "SELECT product_id, name, direction, as_of, matures_on, lock_hash FROM soul_predictions "
@@ -4109,6 +4615,31 @@ def soul_rating(request: Request, token_id: int):
                 "matured": agg[0] if agg else 0, "hits": agg[1] if agg else 0,
                 "pushes": agg[2] if agg else 0, "hit_rate": agg[3] if agg else None,
                 "brier": agg[4] if agg else None,
+                # Published together on purpose (2026-07-28). A hit rate alone is
+                # not interpretable in a trending market: the 07-31 cohort scored
+                # 80.7% while 91.0% of cards ROSE, so "80.7%" reads as skill while
+                # actually LOSING to an all-"up" strategy by 10 points.
+                # baseline_rate = saying "up" on this soul's own picks;
+                # skill = hit_rate - baseline_rate, the only honest read.
+                "baseline_rate": agg[6] if agg else None,
+                "skill": agg[7] if agg else None,
+                # Derived from the ACTUAL rating, never hardcoded. A stale
+                # note is a false statement served to every caller: this said
+                # "requires >= 10 rated calls" for a day after the threshold
+                # went back to 3, and would have shipped that way on 07-31.
+                "rating_note": (
+                    (f"PROVISIONAL ('*'): based on only {agg[0]} matured call(s). "
+                     f"At this sample size only 0/33/67/100% hit rates are "
+                     f"attainable, so B/C/D are unreachable and every soul lands "
+                     f"A or F — the letter is preliminary. Judge on `skill` "
+                     f"(hit_rate minus baseline_rate), not `hit_rate`.")
+                    if agg and str(agg[5]).endswith("*") else
+                    (f"Based on {agg[0]} matured call(s). Judge on `skill` "
+                     f"(hit_rate minus baseline_rate), not `hit_rate` — a high "
+                     f"hit rate in a rising market is beta, not skill.")
+                    if agg and agg[5] != "UNRATED" else
+                    "UNRATED: fewer than 3 rated calls have matured for this "
+                    "soul. No letter is claimed."),
                 "recent_results": [{"name": r[0], "direction": r[1], "as_of": r[2],
                                     "move_pct": r[3],
                                     "outcome": ("push" if r[5] else ("hit" if r[4] else "miss"))}
@@ -5475,9 +6006,110 @@ async def ebay_comps(
 
 
 # ---------------------------------------------------------------------------
+# Sports stat verification — FREE, and deliberately UNADVERTISED.
+#
+# include_in_schema=False on all three: they are fully functional for anyone we
+# hand the URL to (a grant reviewer, a counterparty), but they do not appear in
+# /openapi.json, the x402 manifest, or any agent-discovery surface. The panel's
+# only real moat is how long a copier waits before starting, and advertising
+# "we are collecting sports stats" sets that delay to zero. Deploy now so the
+# on-chain clock runs; announce when the committed-day count is itself the
+# argument. Flipping these to public is a one-line change per route.
+# ---------------------------------------------------------------------------
+
+# NOTE: these three handlers are sync `def`, NOT `async def`, on purpose.
+# They do blocking network I/O (chain reads, and for NFL a 44-page upstream
+# scan that takes ~60s cold). Inside an async handler that blocks the event
+# loop and takes the WHOLE oracle down for the duration. A sync def is run in
+# FastAPI's threadpool instead, so a slow audit costs one worker, not the server.
+@app.get("/api/v1/sports/registry", tags=["Free"], include_in_schema=False)
+@limiter.limit("30/minute")
+def sports_registry(request: Request):
+    """🆓 **FREE** — What the stat registry holds, and how to check it yourself."""
+    try:
+        import sports_verify as _sv
+        return _sv.registry_summary()
+    except Exception as e:
+        return JSONResponse(status_code=503, content={
+            "status": "error", "detail": f"registry read failed: {str(e)[:120]}"})
+
+
+@app.get("/api/v1/sports/proof/{league}/{date}/{player_id}",
+         tags=["Free"], include_in_schema=False)
+@limiter.limit("20/minute")
+def sports_proof(
+    request: Request, league: str, date: str, player_id: str,
+    stat_group: str = Query(None, description="hitting | pitching (default: all)"),
+):
+    """🆓 **FREE** — Merkle proof that a player's line was committed on a given day.
+
+    Returns the leaf preimage, the proof path, and the result of calling
+    verifyStatLine() on the deployed contract on EVERY chain we commit to, so
+    nothing here requires trusting our arithmetic. Commit lag is reported
+    explicitly — that is the evidence the record was not written after the fact.
+    """
+    try:
+        import sports_verify as _sv
+        r = _sv.build_proof(league.lower(), date, player_id, stat_group)
+        if r.get("status") == "not_found":
+            return JSONResponse(status_code=404, content=r)
+        return r
+    except ValueError:
+        return JSONResponse(status_code=400, content={
+            "status": "error", "detail": "date must be UTC YYYY-MM-DD"})
+    except Exception as e:
+        return JSONResponse(status_code=503, content={
+            "status": "error", "detail": f"proof build failed: {str(e)[:120]}"})
+
+
+@app.get("/api/v1/sports/audit/{league}/{date}/{player_id}",
+         tags=["Free"], include_in_schema=False)
+@limiter.limit("10/minute")
+def sports_audit(
+    request: Request, league: str, date: str, player_id: str,
+    stat_group: str = Query("hitting", description="hitting | pitching"),
+):
+    """🆓 **FREE** — Did this stat line change since we committed it?
+
+    Re-fetches the league's CURRENT published line and diffs it against the one
+    anchored on-chain. A difference is not misconduct — scorers correct real
+    errors — but it is now demonstrable rather than arguable. Rate-limited
+    tighter than the others because it hits the league API per call.
+    """
+    try:
+        import sports_verify as _sv
+        r = _sv.audit_line(league.lower(), date, player_id, stat_group)
+        if r.get("status") == "not_found":
+            return JSONResponse(status_code=404, content=r)
+        if r.get("status") == "unsupported":
+            return JSONResponse(status_code=501, content=r)
+        return r
+    except ValueError:
+        return JSONResponse(status_code=400, content={
+            "status": "error", "detail": "date must be UTC YYYY-MM-DD"})
+    except Exception as e:
+        return JSONResponse(status_code=503, content={
+            "status": "error", "detail": f"audit failed: {str(e)[:120]}"})
+
+
+# ---------------------------------------------------------------------------
 # Trending Cards — $0.025
 # Top movers by price velocity from the TCG database
 # ---------------------------------------------------------------------------
+
+# Day-scoped cache for the enriched trending board.
+#
+# WHY (2026-07-30): enriching each row with a conformal forecast (BUG-7) took the
+# endpoint from 41ms to 2,335ms — measured on a REAL paying caller, who hit the
+# slow path an hour after the change shipped. A 57x regression on a paid route is
+# my own defect, not an acceptable cost of the feature.
+#
+# Safe to cache because every input is fixed for the day: the ranking reads the
+# latest price_history date, and the conformal offsets refit once nightly. The
+# key includes that price date, so the cache self-invalidates the moment the
+# pipeline writes a new day — no TTL to tune and no stale board after a refit.
+_TRENDING_CACHE = {}
+
 
 @app.get("/api/v1/trending", tags=["Paid — $0.025"])
 @limiter.limit("30/minute")
@@ -5507,6 +6139,11 @@ async def trending_cards(
         if not max_date:
             raise HTTPException(status_code=503, detail="No price data available")
 
+        # Keyed on the price date, so a new pipeline day invalidates it for free.
+        _ck = (max_date, game or "", limit, min_price)
+        if _ck in _TRENDING_CACHE:
+            return _TRENDING_CACHE[_ck]
+
         cat_id = _game_to_category(game) if game else None
         if cat_id:
             params = [max_date, min_price, cat_id, limit]
@@ -5533,8 +6170,21 @@ async def trending_cards(
             LEFT JOIN shroomy_stats ss ON c.product_id = ss.product_id
             WHERE ph.date = ?
               AND ph.market_price >= ?
+              -- BUG-4 (audit 2026-07-30): the free /api/v1/forecast board has
+              -- always excluded product_id >= 9500000 (the Vibes range), which is
+              -- where the malformed rows live: high < low, hard-zero drift and
+              -- volatility, double-spaced names from a broken upstream join. The
+              -- PAID endpoint was not applying the filter the FREE one already
+              -- had, so customers got dirtier data than non-customers.
+              AND c.product_id < 9500000
               {cat_filter}
-            ORDER BY ph.market_price DESC
+            -- BUG-3: this said ORDER BY ph.market_price DESC, which made a
+            -- "trending" endpoint return a MOST EXPENSIVE list — 24 sealed cases
+            -- and one real single. Ranked by |drift| (price velocity) now, which
+            -- is the only momentum signal actually present in shroomy_stats.
+            -- Volume and views are NOT available here; the description no longer
+            -- claims them.
+            ORDER BY ABS(COALESCE(ss.drift, 0)) DESC, ph.market_price DESC
             LIMIT ?
             """,
             params,
@@ -5545,9 +6195,42 @@ async def trending_cards(
             (name, product_id, category_id, price,
              low, mid, high, date, drift, volatility) = row
 
+            # BUG-5: single joke listings ($199,999.99, $77,777.77) were taken as
+            # `high` verbatim, producing spreads up to 3537%. Clamp the band to a
+            # sane multiple of the market price rather than dropping the row, so
+            # the card still appears but cannot carry a fantasy number.
+            # Cap the WHOLE band, then restore ordering. The first version of
+            # this clamped `high` and `low` but left `mid` alone, which produced
+            # mid ABOVE high (Onion Patch: low 50 / mid 76 / high 50) — the same
+            # class of internal contradiction the cap was added to remove, in 2
+            # of the top 5 rows. Caught by the external reviewer, not by me.
+            # Clamping all three and re-sorting guarantees low <= mid <= high for
+            # any input; sorting is safe here because after clamping these are
+            # already derived values, and an out-of-order band is strictly worse
+            # than a re-ordered one.
+            SPREAD_CAP = 5.0
+            capped = False
+            if price:
+                ceiling = price * SPREAD_CAP
+                vals = []
+                for v in (low, mid, high):
+                    if v is None:
+                        vals.append(None)
+                    elif v > ceiling:
+                        vals.append(ceiling); capped = True
+                    else:
+                        vals.append(v)
+                present = sorted(v for v in vals if v is not None)
+                it = iter(present)
+                low, mid, high = (next(it) if v is not None else None for v in vals)
             spread_pct = 0.0
             if low and high and low > 0:
                 spread_pct = round(((high - low) / low) * 100, 1)
+            # BUG-6: market_price sometimes sits entirely OUTSIDE its own low-high
+            # band (last-sale vs active-listing, two sources merged without
+            # reconciliation). We cannot decide which is true here, so say so
+            # instead of shipping two numbers that silently contradict.
+            outside = bool(price and low and high and not (low <= price <= high))
 
             trending.append({
                 "card_name": name,
@@ -5560,23 +6243,91 @@ async def trending_cards(
                     "high": round(float(high), 2) if high else None,
                     "spread_pct": spread_pct,
                 },
+                "spread_capped": capped,
+                "price_outside_spread": outside,
                 "drift": round(float(drift), 6),
                 "volatility": round(float(volatility), 6),
                 "price_date": date,
             })
 
-        return {
+            # BUG-7 (external audit 2026-07-30): the PAID endpoint returned 10
+            # fields while the FREE board returned 26 — "any agent that reads both
+            # will stop paying." Cleaning the data (BUG-3/4/5/6) fixed quality but
+            # not the inversion. So each ranked row now carries the SAME conformal
+            # analytics the free board has: point, 50/90 bands, VaR95/99, prob_up,
+            # Safe-Hold, Momentum, regime, plain English.
+            #
+            # This is not duplication of the free board — measured, ZERO of the
+            # top-25 movers appear in it. The free board is the top ~200 by
+            # LIQUIDITY; this is the top movers by VELOCITY. Disjoint sets, and
+            # the forecast is what makes the velocity actionable.
+            #
+            # ~20ms per card, so ~0.5s for 25. A failure on one card must not
+            # sink the response: that row keeps its price data and says why.
+            try:
+                fc = _conformal_forecast(name, float(price), 30)
+                fp, rm, g = fc["forecast_percentiles"], fc["risk_metrics"], fc["grades"]
+                obj = _agent_obj(
+                    name, product_id, _CATEGORY_TO_GAME.get(category_id, "Other"),
+                    float(price), date, fc["model_params"].get("regime", "global"),
+                    fp["50th"], fp["5th"], fp["95th"], fp["75th"],
+                    rm.get("VaR_95_pct"), rm.get("CVaR_95_pct"), g["prob_up"],
+                    g["drift_spike"], g["safe_hold"], g["momentum"])
+                # trending's own keys win — they are the reason this endpoint exists
+                merged = {k: v for k, v in obj.items() if k not in trending[-1]}
+                trending[-1].update(merged)
+            except Exception as e:
+                trending[-1]["forecast_unavailable"] = str(e)[:120]
+
+        _payload = {
             "status": "ok",
             "tool": "trending_cards",
             "price": "$0.025",
             "data": {
                 "filter_game": game or "All Games",
+                # BUG-15: this echoed the DEFAULT rather than the value received.
                 "min_price": min_price,
+                "ranked_by": "abs(drift) — price velocity, desc",
+                # Disclosed BEFORE a buyer discovers it by diffing two rows
+                # (external review 2026-07-30): only 11 distinct risk signatures
+                # across 25 rows, 7 of them identical drift_spike entries. That is
+                # regime-aware conformal working as designed — band and VaR
+                # PERCENTAGES are regime-level constants, so cards sharing a
+                # regime share them; absolute values differ per card because
+                # prices do. Saying "calibrated risk per card" would overstate it.
+                "risk_granularity": (
+                    "Band and VaR percentages are REGIME-LEVEL, not per-card: "
+                    "regime-aware split conformal fits one offset array per "
+                    "regime (calm/medium/jumpy), so cards in the same regime "
+                    "share the same percentage bands. Absolute band values differ "
+                    "per card because prices differ. Cards flagged "
+                    "`drift_spike: true` are additionally clamped to a single "
+                    "regime forecast and report `momentum: NA`."),
+                "vs_free_board": (
+                    "/api/v1/forecast is FREE and covers the top ~200 by LIQUIDITY. "
+                    "This is ranked by VELOCITY and the two sets are disjoint — none "
+                    "of these cards appear on the free board. Each row carries the "
+                    "same conformal analytics (point, bands, VaR, Safe-Hold, "
+                    "Momentum) plus drift/volatility/spread the free board omits."),
+                "ranking_note": (
+                    "Ranked by price velocity (drift). 30-day sales volume and "
+                    "view counts are NOT available in this dataset and are no "
+                    "longer claimed. `price_spread.high` is capped at 5x market "
+                    "price to exclude joke listings; `spread_capped` marks those "
+                    "rows. `price_outside_spread` marks rows where market price "
+                    "and the listing band disagree — last-sale vs active-listing, "
+                    "unreconciled."),
                 "price_date": max_date,
                 "results": len(trending),
                 "trending": trending,
             },
         }
+        # Bound the cache: one entry per (date, game, limit, min_price). Clear on
+        # a date change rather than growing forever across days.
+        for k in [k for k in _TRENDING_CACHE if k[0] != max_date]:
+            _TRENDING_CACHE.pop(k, None)
+        _TRENDING_CACHE[_ck] = _payload
+        return _payload
     finally:
         db.close()
 
@@ -5881,20 +6632,21 @@ async def phygital_arbitrage(
 
 
 # ---------------------------------------------------------------------------
-# Wallet Portfolio Valuation — $0.25 x402 tier
+# Wallet Portfolio Valuation — FREE (see the root-listing note; declared free
+# 2026-07-30 rather than paywalled, because it returns the caller's own cards)
 # Queries a Polygon wallet for Courtyard NFTs, cross-refs with TCG prices
 # ---------------------------------------------------------------------------
 
 ALCHEMY_KEY = os.getenv("ALCHEMY_API_KEY", "")
 
-@app.get("/api/v1/wallet/portfolio")
+@app.get("/api/v1/wallet/portfolio", tags=["Free"])
 @limiter.limit("10/minute")
 def wallet_portfolio(
     request: Request,
     address: str = Query(..., description="Polygon wallet address (0x...)"),
 ):
     """
-    💎 Vault Portfolio Valuation — $0.25
+    💎 Vault Portfolio Valuation — FREE
 
     Input a Polygon wallet address to see all Courtyard.io vaulted cards,
     their TCGPlayer raw values, grade-adjusted estimated values, and total P&L.
@@ -6772,6 +7524,46 @@ def _openapi_with_payment_info():
 
 
 app.openapi = _openapi_with_payment_info
+
+
+# ---------------------------------------------------------------------------
+# Settlement finalizer — registered LAST, therefore the OUTERMOST middleware.
+#
+# WHY IT HAS TO LIVE HERE (2026-07-29): Starlette makes the last-registered
+# middleware outermost, so this is the only layer whose post-processing runs
+# AFTER x402_payment_gate has attached PAYMENT-RESPONSE. _request_logger is
+# registered first (innermost) and physically cannot observe settlement — it
+# stashes its record on request.state and this writes it.
+#
+# Found the hard way: an unclassified payer hit /api/v1/simulate, got a 200, and
+# paid 0.015 USDC on-chain one second later — while the log said settled=false.
+# The header check added the previous day was structurally dead, which turned
+# paid_failed into a flag that could never fire. A money-owed alarm that is
+# silently always-false is worse than the noisy one it replaced.
+# ---------------------------------------------------------------------------
+@app.middleware("http")
+async def _settlement_finalizer(request, call_next):
+    response = await call_next(request)
+    try:
+        rec = getattr(request.state, "_oracle_rec", None)
+        if rec is not None:
+            # Observed, not inferred. v2 header, with the v1 legacy name too.
+            # Only stamp payment fields when a payer was actually decoded —
+            # a free call has nothing to settle and settled=false on it is
+            # noise that reads like a failed payment.
+            if rec.get("payer"):
+                settled = ("payment-response" in response.headers
+                           or "x-payment-response" in response.headers)
+                rec["settled"] = settled
+                # The ONLY condition that owes anyone a refund: money moved AND
+                # we failed to deliver.
+                rec["paid_failed"] = settled and bool(rec.get("request_failed"))
+            os.makedirs(os.path.dirname(_REQLOG), exist_ok=True)
+            with open(_REQLOG, "a", encoding="utf-8") as f:
+                f.write(json.dumps(rec) + "\n")
+    except Exception:
+        pass
+    return response
 
 
 if __name__ == "__main__":
