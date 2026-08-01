@@ -33,8 +33,12 @@ def keccak256(data: bytes) -> bytes:
 
 
 def compute_leaf(pid, cat, name, market, low):
+    # uint256 categoryId as of the 2026-07-31 audit-patch redeploy (de2b673
+    # widened it from uint16). MUST match the deployed contract's computeLeaf
+    # abi.encode exactly or no proof will ever verify — if you repoint this
+    # updater at a different contract generation, check that signature first.
     inner = abi_encode(
-        ["uint256", "uint16", "string", "uint256", "uint256"],
+        ["uint256", "uint256", "string", "uint256", "uint256"],
         [pid, cat, name, market, low]
     )
     return keccak256(keccak256(inner))
