@@ -24,6 +24,7 @@ DB_CANDIDATES = [
 DB_PATH = next((p for p in DB_CANDIDATES if os.path.exists(p)), None)
 ABI_PATH = os.path.join(SCRIPT_DIR, "MerklePriceOracle_abi.json")
 DEPLOY_PATH = os.path.join(SCRIPT_DIR, "merkle_deployment.json")
+BASE_DEPLOY_PATH = os.path.join(SCRIPT_DIR, "merkle_deployment_base.json")
 CACHE_PATH = os.path.join(SCRIPT_DIR, "merkle_tree_cache.json")
 
 
@@ -70,6 +71,41 @@ def get_proof(tree, idx):
         proof.append(layer[sib] if sib < len(layer) else b"\x00" * 32)
         idx //= 2
     return proof
+
+
+def mirror_to_base(root, n, pk):
+    """Mirror the new root to the Base mainnet twin (deployed 2026-07-31).
+
+    NON-BLOCKING by design, same as the soul oracle's Base leg: a Base/RPC
+    problem must never interfere with the primary LiteForge commit. Failures
+    print and return — the nightly healthcheck compares the two chains' roots,
+    so silent drift gets caught there, not here.
+    Lessons baked in from the deploy night: Alchemy's replicas lag the head,
+    so use the PENDING nonce (the confirmed one produced a same-nonce
+    'replacement transaction underpriced'), and EIP-1559 fees with headroom
+    (an exact-gasPrice tx stalled the soul grader on a base-fee tick)."""
+    with open(BASE_DEPLOY_PATH) as f:
+        addr = json.load(f)["contract"]
+    with open(ABI_PATH) as f:
+        abi = json.load(f)
+    rpc = f"https://base-mainnet.g.alchemy.com/v2/{os.getenv('ALCHEMY_API_KEY')}"
+    w3 = Web3(Web3.HTTPProvider(rpc, request_kwargs={"timeout": 60}))
+    acct = w3.eth.account.from_key(pk)
+    base_fee = w3.eth.get_block("latest")["baseFeePerGas"]
+    tip = max(w3.eth.max_priority_fee, 1_000_000)
+    oracle = w3.eth.contract(address=addr, abi=abi)
+    tx = oracle.functions.updateMerkleRoot(root, n).build_transaction({
+        "chainId": 8453, "from": acct.address,
+        "nonce": w3.eth.get_transaction_count(acct.address, "pending"),
+        "gas": 200000, "maxFeePerGas": base_fee * 3 + tip, "maxPriorityFeePerGas": tip,
+    })
+    signed = w3.eth.account.sign_transaction(tx, pk)
+    h = w3.eth.send_raw_transaction(getattr(signed, "raw_transaction", None) or signed.rawTransaction)
+    receipt = w3.eth.wait_for_transaction_receipt(h, timeout=120)
+    if receipt.status == 1:
+        print(f"  ✅ Base mirror committed (tx {h.hex()[:16]}…, gas {receipt.gasUsed})")
+    else:
+        print(f"  ⚠️ Base mirror tx reverted ({h.hex()}) — LiteForge commit unaffected")
 
 
 def main():
@@ -158,6 +194,13 @@ def main():
         print(f"  ✅ Root committed (gas: {receipt.gasUsed}, update #{total})")
     else:
         print(f"  ❌ Failed!"); sys.exit(1)
+
+    # Mirror to Base mainnet — never blocks the primary
+    if os.path.exists(BASE_DEPLOY_PATH):
+        try:
+            mirror_to_base(root, len(rows), pk)
+        except Exception as e:
+            print(f"  ⚠️ Base mirror failed ({str(e)[:100]}) — LiteForge commit unaffected")
 
     # Update cache
     cache = {
