@@ -4399,11 +4399,26 @@ async def forecast_board():
            WHERE l.forecast_date=? AND l.horizon=30 AND u.publish_flag=1
            ORDER BY u.rank ASC""", [as_of]).fetchall()
     led.close()
-    catmap = {}
+    catmap, lastmap = {}, {}
+    _pids = [r[1] for r in rows]
     db = _get_db()
     if db:
         try:
             catmap = dict(db.execute("SELECT product_id, category_id FROM cards").fetchall())
+            # last_priced: the date of each card's most recent market print.
+            # Added 2026-08-04 for the soul-lock LIQUIDITY FILTER. It is
+            # published (not just used internally) on purpose: the lock filters
+            # the board on this field, and third parties reproduce our picks by
+            # re-running picks() against this same published board — so the
+            # filter input has to be in the document they can fetch, or
+            # recomputability silently breaks. Additive: no card is removed from
+            # the board, so every other consumer is unaffected.
+            if _pids:
+                _q = ",".join("?" * len(_pids))
+                lastmap = dict(db.execute(
+                    f"SELECT product_id, MAX(date) FROM price_history "
+                    f"WHERE product_id IN ({_q}) AND market_price > 0 "
+                    f"GROUP BY product_id", _pids).fetchall())
         finally:
             db.close()
     cards = []
@@ -4415,10 +4430,19 @@ async def forecast_board():
         safe = safe_hold_grade(v95 if v95 is not None else 0.0, v99 if v99 is not None else 0.0)
         mom = "NA" if spike else momentum_grade((point / price - 1) * 100, pu)
         game = _CARD_GAMES.get(catmap.get(pid), "TCG")
-        cards.append(_agent_obj(name, pid, game, price, as_of, regime, point,
-                                b90l, b90h, b50h, v95, v99, pu, spike, safe, mom))
+        _c = _agent_obj(name, pid, game, price, as_of, regime, point,
+                        b90l, b90h, b50h, v95, v99, pu, spike, safe, mom)
+        _c["last_priced"] = lastmap.get(pid)
+        cards.append(_c)
     payload = {"as_of": as_of, "horizon": 30, "count": len(cards),
                "source": "published top-liquidity universe — free, conformal, cached nightly",
+               "field_notes": {
+                   "last_priced": "Date of this card's most recent market print. "
+                                  "A card can sit on the board while its price feed "
+                                  "goes quiet (illiquid sealed product, reserved-list "
+                                  "singles). Soul picks are restricted to cards priced "
+                                  "within 7 days of as_of — see /api/v1/soul-rating "
+                                  "methodology."},
                "cards": cards}
     _FORECAST_BOARD.update(as_of=as_of, payload=payload)
     return payload
