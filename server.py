@@ -415,11 +415,17 @@ app = FastAPI(
     title="The Undesirables — AI Tools API",
     description=(
         "TCG card grading, conformal risk forecasting, and market intelligence. "
-        "Powered by x402 micropayments in USDC on Base. "
+        "Powered by x402 micropayments — USDC on Base, USDC on Solana, or USDG "
+        "on Robinhood Chain; the 402 offers all three and the agent picks a leg. "
         "Free tools require no payment. Paid tools return HTTP 402 — "
-        "sign a USDC payment and retry with the payment proof header."
+        "sign a payment and retry with the payment proof header."
     ),
     version="1.0.0",
+    # x402scan uses contact.email for merchant ownership verification and shows
+    # it on the public listing (sailorpepe's pick 2026-08-04: a role address on
+    # the domain, not a personal one — this document is mirrored by crawlers).
+    contact={"name": "The Undesirables", "email": "oracle@the-undesirables.com",
+             "url": "https://oracle.the-undesirables.com"},
     lifespan=lifespan,
     docs_url="/docs",
     redoc_url="/redoc",
@@ -7504,8 +7510,14 @@ def _openapi_with_payment_info():
     if _openapi_cache is not None:
         return _openapi_cache
     from fastapi.openapi.utils import get_openapi
+    # contact/terms MUST be forwarded explicitly: get_openapi() builds `info`
+    # from its own kwargs, so anything set on the FastAPI constructor that is
+    # not passed here is silently dropped from the served document (the
+    # x402scan contact.email did exactly that on 2026-08-04 — present in the
+    # constructor, absent from /openapi.json).
     schema = get_openapi(title=app.title, version=app.version,
-                         description=app.description, routes=app.routes)
+                         description=app.description, routes=app.routes,
+                         contact=app.contact, terms_of_service=app.terms_of_service)
     for route_key, cfg in _X402_MANIFEST_ROUTES.items():
         parts = route_key.split(" ", 1)
         method, path = (parts[0].lower(), parts[1]) if len(parts) == 2 else ("get", parts[0])
@@ -7527,6 +7539,27 @@ def _openapi_with_payment_info():
             "asset": "USDC",
             "networks": [a.get("network") for a in acc_list],
         }
+
+    # `security: []` on every FREE operation (x402scan discovery spec, added
+    # 2026-08-04). Their prober walks every path in this document and flags
+    # anything that does not answer 402 — so our 28 free endpoints came back as
+    # 39 "errors" on the first registration. `security: []` means "this
+    # operation needs no auth", and the prober skips it. It is a SPEC
+    # ANNOTATION, not a behavior change: nothing here paywalls a route, and
+    # nothing here must ever be used to make a listing look green by charging
+    # for the free tier — the 15-paid/28-free split is the positioning.
+    #
+    # Derived by ABSENCE of x-payment-info, i.e. from the same
+    # _X402_MANIFEST_ROUTES table the paywall itself uses, so a route added to
+    # (or removed from) the paid table can never disagree with this. Do not
+    # replace it with a hardcoded list of free paths.
+    for _path, _ops in schema.get("paths", {}).items():
+        for _method, _op in _ops.items():
+            if _method not in ("get", "post", "put", "patch", "delete"):
+                continue
+            if isinstance(_op, dict) and "x-payment-info" not in _op:
+                _op["security"] = []
+
     _openapi_cache = schema
     return schema
 
