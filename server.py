@@ -1572,7 +1572,13 @@ async def root():
 
 
 _HEALTH_STATS_CACHE = {"at": 0.0, "data": None}
-_HEALTH_STATS_TTL = 300  # 5 min — these counts move once a night
+# 6h, raised from 5min (2026-08-06). These counts genuinely change once a night
+# (the 3am pipeline), and COUNT(*) over price_history now costs ~30-60s at 98M
+# rows and climbing. A 5-minute TTL meant paying that scan ~288x/day to refresh
+# a number that changes once — pure load on the DB the live API reads. With the
+# background refresh above, no request ever waits on it either way; this just
+# stops us scanning 100M rows all day for nothing.
+_HEALTH_STATS_TTL = 21600
 
 
 @app.get("/health", tags=["Info"])
@@ -1593,21 +1599,45 @@ async def health():
         result.update(cached)
         return result
 
-    db = _get_db()
-    if db:
-        try:
-            stats = {
-                "total_cards": db.execute("SELECT COUNT(*) FROM cards").fetchone()[0],
-                "total_prices": db.execute("SELECT COUNT(*) FROM price_history").fetchone()[0],
-                "latest_date": db.execute("SELECT MAX(date) FROM price_history").fetchone()[0],
-            }
-            _HEALTH_STATS_CACHE.update({"at": now, "data": stats})
-            result.update(stats)
-        except Exception:
-            if cached:                      # serve stale rather than omit
-                result.update(cached)
-        finally:
-            db.close()
+    # NEVER block the response on the counts (2026-08-06). The 5-minute cache
+    # above was added when COUNT(*) over price_history took ~15s at 27.8M rows;
+    # the TCGCSV archive backfill took that table to 96M (heading past 200M),
+    # where the same COUNT takes 30s+ — so EVERY cache expiry served a 30-second
+    # /health, tripping the stack healthcheck and any uptime probe. A liveness
+    # endpoint that gets slower as the corpus grows is the wrong shape.
+    # Now: answer immediately with stale counts if we have them, and refresh in
+    # the background. Liveness is never coupled to a table scan again.
+    if cached:
+        result.update(cached)               # stale-while-revalidate
+        result["stats_age_s"] = int(now - _HEALTH_STATS_CACHE["at"])
+
+    if not _HEALTH_STATS_CACHE.get("refreshing"):
+        _HEALTH_STATS_CACHE["refreshing"] = True
+
+        def _refresh():
+            db = _get_db()
+            if not db:
+                _HEALTH_STATS_CACHE["refreshing"] = False
+                return
+            try:
+                stats = {
+                    "total_cards": db.execute("SELECT COUNT(*) FROM cards").fetchone()[0],
+                    "total_prices": db.execute("SELECT COUNT(*) FROM price_history").fetchone()[0],
+                    "latest_date": db.execute("SELECT MAX(date) FROM price_history").fetchone()[0],
+                }
+                _HEALTH_STATS_CACHE.update({"at": _t.time(), "data": stats})
+            except Exception:
+                pass                        # keep serving the last good counts
+            finally:
+                db.close()
+                _HEALTH_STATS_CACHE["refreshing"] = False
+
+        import threading
+        threading.Thread(target=_refresh, daemon=True).start()
+
+    # First-ever call has no cache to serve: report liveness, counts follow.
+    if not cached:
+        result["stats"] = "warming"
 
     return result
 
