@@ -202,7 +202,15 @@ def main():
         nonce = w3.eth.get_transaction_count(wallet, "pending")   # include in-flight txs
         tx = oracle.functions.updateMerkleRoot(root, len(rows)).build_transaction({
             "chainId": CHAIN, "from": wallet, "nonce": nonce,
-            "gas": 250000, "gasPrice": w3.eth.gas_price,
+            # ESCALATING gas headroom (2026-08-07). An EXACT w3.eth.gas_price
+            # loses the race whenever the base fee ticks up between building
+            # the tx and its inclusion: this pusher failed 08-03, 08-04 and
+            # 08-07 with "max fee per gas less than block base fee", each time
+            # short by under 1% (e.g. 2,102,963,000 vs 2,106,311,000). The
+            # sibling LitVM pushers (weather_merkle, litvm_updater_v2) already
+            # solved this with a multiplier ladder; graded was the last holdout.
+            "gas": 250000,
+            "gasPrice": int(w3.eth.gas_price * (3, 6, 12, 24)[attempt]),
         })
         signed = w3.eth.account.sign_transaction(tx, private_key=pk)
         # web3 v6+ exposes raw_transaction; older exposes rawTransaction.
@@ -213,8 +221,15 @@ def main():
             break
         except Exception as e:
             msg = str(e).lower()
+            # A base-fee miss is transient BY DEFINITION — the next attempt
+            # reads a fresh base fee and multiplies harder. Before this it fell
+            # through to sys.exit(1) below, so being short by <1% killed the
+            # entire daily push and the root silently went stale.
             if attempt < 3 and ("nonce too low" in msg or "already known" in msg
-                                or "replacement transaction underpriced" in msg):
+                                or "replacement transaction underpriced" in msg
+                                or "less than block base fee" in msg
+                                or "fee too low" in msg
+                                or "underpriced" in msg):
                 print(f"  nonce conflict: {e} — backing off, refetching nonce")
                 time.sleep(8); continue
             print(f"  ERROR sending tx: {e}")
