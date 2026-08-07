@@ -2769,49 +2769,70 @@ def search_tcg_products(
             tokens = [t for t in re.findall(r"[A-Za-z0-9]+", query) if len(t) > 1]
             if len(tokens) > 1:
                 try:
-                    # Use the LONGEST token, not an OR of all of them. The cards
-                    # table has no set/group column (only name/clean_name are
-                    # indexed), so a set qualifier can never be honoured — and
-                    # OR-ing lets generic words win: "Base Set Charizard Holo"
-                    # ranked "Pikachu (Base Set)" first, because that name
-                    # matches base+set densely while no card is named
-                    # "Charizard (Base Set)". Confidently returning the wrong
-                    # card is worse than returning none, since an agent takes it
-                    # as the answer instead of retrying. Longest token is a good
-                    # proxy for the actual card name ("charizard" over
-                    # base/set/holo) and keeps the result precise.
-                    or_expr = max(tokens, key=len)
-                    if cat_id:
-                        cur.execute(
-                            """
-                            SELECT DISTINCT c.product_id, c.name, c.clean_name, c.category_id,
-                                   p.market_price, p.low_price, p.mid_price, p.date, c.group_name
-                            FROM cards_fts fts
-                            JOIN cards c ON c.rowid = fts.rowid
-                            LEFT JOIN price_history p ON c.product_id = p.product_id
-                                AND p.date = ?
-                            WHERE cards_fts MATCH ? AND c.category_id = ?
-                            ORDER BY bm25(cards_fts), COALESCE(p.market_price, 0) DESC
-                            LIMIT ?
-                            """,
-                            (max_date, or_expr, cat_id, limit),
-                        )
-                    else:
-                        cur.execute(
-                            """
-                            SELECT DISTINCT c.product_id, c.name, c.clean_name, c.category_id,
-                                   p.market_price, p.low_price, p.mid_price, p.date, c.group_name
-                            FROM cards_fts fts
-                            JOIN cards c ON c.rowid = fts.rowid
-                            LEFT JOIN price_history p ON c.product_id = p.product_id
-                                AND p.date = ?
-                            WHERE cards_fts MATCH ?
-                            ORDER BY bm25(cards_fts), COALESCE(p.market_price, 0) DESC
-                            LIMIT ?
-                            """,
-                            (max_date, or_expr, limit),
-                        )
-                    rows = cur.fetchall()
+                    # RELAXATION LADDER (2026-08-07, replaces the longest-token
+                    # guess). The old fallback's premise went stale: it said the
+                    # FTS index has no set column, but cards_fts now indexes
+                    # group_name — so set qualifiers ARE honourable, and picking
+                    # the longest single token threw that away. Failure it
+                    # caused: "lugia neo genesis holo" -> longest token is
+                    # "genesis" -> 1,988 matches ranked by bm25 -> cards
+                    # literally NAMED "Genesis" win, zero Lugia (Studio plugin
+                    # audit, 08-07).
+                    # Ladder, cheapest-precise first, only on the empty path:
+                    #   1. AND with one token dropped (n candidates, first hit
+                    #      wins) — handles ONE noise token: "lugia neo genesis
+                    #      holo" drops "holo" and finds Lugia | Neo Genesis.
+                    #   2. OR of all tokens ranked by bm25 — docs matching MORE
+                    #      distinct tokens score better, which handles several
+                    #      noise tokens: "psa 10 charizard base set" ranks
+                    #      Charizard | Base Set first (verified against the
+                    #      live index before shipping).
+                    # Regression set (Studio's, do not break): "lugia neo
+                    # genesis holo" -> Lugia first; "charizard star delta
+                    # species" -> exact match first (never reaches this path);
+                    # "psa 10 charizard base set" -> Charizard results.
+                    toks = tokens[:6]  # bound the candidate count
+                    candidates = []
+                    if len(toks) > 2:
+                        for skip in range(len(toks) - 1, -1, -1):
+                            kept = [t for i, t in enumerate(toks) if i != skip]
+                            candidates.append(" AND ".join(kept))
+                    candidates.append(" OR ".join(toks))
+                    or_expr = None  # set per-candidate below
+                    for cand in candidates:
+                        if cat_id:
+                            cur.execute(
+                                """
+                                SELECT DISTINCT c.product_id, c.name, c.clean_name, c.category_id,
+                                       p.market_price, p.low_price, p.mid_price, p.date, c.group_name
+                                FROM cards_fts fts
+                                JOIN cards c ON c.rowid = fts.rowid
+                                LEFT JOIN price_history p ON c.product_id = p.product_id
+                                    AND p.date = ?
+                                WHERE cards_fts MATCH ? AND c.category_id = ?
+                                ORDER BY bm25(cards_fts), COALESCE(p.market_price, 0) DESC
+                                LIMIT ?
+                                """,
+                                (max_date, cand, cat_id, limit),
+                            )
+                        else:
+                            cur.execute(
+                                """
+                                SELECT DISTINCT c.product_id, c.name, c.clean_name, c.category_id,
+                                       p.market_price, p.low_price, p.mid_price, p.date, c.group_name
+                                FROM cards_fts fts
+                                JOIN cards c ON c.rowid = fts.rowid
+                                LEFT JOIN price_history p ON c.product_id = p.product_id
+                                    AND p.date = ?
+                                WHERE cards_fts MATCH ?
+                                ORDER BY bm25(cards_fts), COALESCE(p.market_price, 0) DESC
+                                LIMIT ?
+                                """,
+                                (max_date, cand, limit),
+                            )
+                        rows = cur.fetchall()
+                        if rows:
+                            break
                 except Exception:
                     pass                      # keep the empty result on any failure
 
