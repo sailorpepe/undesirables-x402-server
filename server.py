@@ -1774,7 +1774,26 @@ async def card_page(product_id: int):
             f"<div class=foot>🍄 <a href='https://x.com/undesirables_ai'>@undesirables_ai</a> · "
             f"<a href='https://oracle.the-undesirables.com'>oracle.the-undesirables.com</a></div>"
             f"</div></div></div></body></html>")
-    return HTMLResponse(html)
+    # EDGE-CACHEABLE (2026-08-07). This page is the landing target of the daily
+    # X post, and it was served with NO cache headers at all —
+    # `cf-cache-status: DYNAMIC`, i.e. every single visitor hit the Mini's
+    # SQLite directly. The page itself is cheap (2 queries, ~27ms idle), but
+    # that means a reader's experience is decided by whatever batch job happens
+    # to be running: during an FTS rebuild it measured 17s, during the TCGCSV
+    # backfill the board hit 25s. A marketing link must not be coupled to
+    # write load on a 16GB box.
+    #
+    # The underlying data changes ONCE A NIGHT (3am pipeline), so a 30-minute
+    # edge TTL is very conservative. `stale-while-revalidate` is the part that
+    # actually protects readers: once warm, Cloudflare serves the stale copy
+    # instantly and refetches in the background, so a slow origin never blocks
+    # a visitor again.
+    # NOTE: Cloudflare does not cache HTML by default — this header is
+    # necessary but NOT sufficient. It needs a Cache Rule on /card/* in the
+    # dashboard (zone changes are dashboard-only; no CF token on this box).
+    return HTMLResponse(html, headers={
+        "Cache-Control": "public, s-maxage=1800, stale-while-revalidate=86400",
+    })
 
 
 # Brand favicon (mushroom) — replaces the default browser globe.
