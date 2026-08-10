@@ -6200,6 +6200,112 @@ def sports_audit(
             "status": "error", "detail": f"audit failed: {str(e)[:120]}"})
 
 
+@app.get("/api/v1/sports/snapshot/{league}", tags=["Free"], include_in_schema=False)
+@limiter.limit("30/minute")
+def sports_snapshot(
+    request: Request, league: str,
+    date: str = Query(None, description="UTC YYYY-MM-DD (default: latest committed day)"),
+    stat_group: str = Query(None, description="mlb: hitting|pitching · nhl: skater|goalie · nba/nfl: all"),
+    q: str = Query(None, description="case-insensitive substring match on player name"),
+    limit: int = Query(200, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    delta: int = Query(0, description="1 = include per-stat change vs the previous snapshot day"),
+):
+    """🆓 **FREE** — Bulk league/day snapshot: every player row we committed that day.
+
+    The bulk companion to /sports/proof (which is per-player): one call returns
+    the whole board a sportsbook needs to SET lines, and with delta=1 the
+    day-over-day change of each cumulative stat — which is what RESOLVES a bet
+    (stat lines are season-cumulative; the delta is what the player actually
+    did between snapshots). Every row here is provable via
+    /api/v1/sports/proof/{league}/{date}/{player_id} — same table, same day.
+    Unadvertised like its siblings: functional for anyone with the URL, absent
+    from every discovery surface, by strategy.
+    """
+    league = league.lower().strip()
+    if league not in ("mlb", "nba", "nfl", "nhl"):
+        return JSONResponse(status_code=404, content={
+            "status": "not_found", "detail": "league must be one of mlb|nba|nfl|nhl"})
+    if date is not None:
+        import re as _re
+        if not _re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+            return JSONResponse(status_code=400, content={
+                "status": "error", "detail": "date must be UTC YYYY-MM-DD"})
+    db = _get_db()
+    if db is None:
+        return JSONResponse(status_code=503, content={
+            "status": "error", "detail": "stats database unavailable"})
+    try:
+        if date is None:
+            date = db.execute(
+                "SELECT MAX(date) FROM player_stats_history WHERE league=?",
+                (league,)).fetchone()[0]
+        prev_date = db.execute(
+            "SELECT MAX(date) FROM player_stats_history WHERE league=? AND date<?",
+            (league, date)).fetchone()[0] if delta else None
+
+        where = "league=? AND date=?"
+        args = [league, date]
+        if stat_group:
+            where += " AND stat_group=?"; args.append(stat_group.lower().strip())
+        if q:
+            where += " AND name LIKE ? COLLATE NOCASE"; args.append(f"%{q}%")
+        total = db.execute(
+            f"SELECT COUNT(*) FROM player_stats_history WHERE {where}", args).fetchone()[0]
+        rows = db.execute(
+            f"SELECT player_id, stat_group, name, team, position, games, stats_json "
+            f"FROM player_stats_history WHERE {where} "
+            f"ORDER BY games DESC, name LIMIT ? OFFSET ?",
+            args + [limit, offset]).fetchall()
+
+        prev = {}
+        if prev_date and rows:
+            ph = ",".join("?" * len(rows))
+            for pid, sg, sj in db.execute(
+                    f"SELECT player_id, stat_group, stats_json FROM player_stats_history "
+                    f"WHERE league=? AND date=? AND player_id IN ({ph})",
+                    [league, prev_date] + [r[0] for r in rows]):
+                prev[(pid, sg)] = sj
+
+        def _num(v):
+            # league feeds ship rate stats as strings (".268"); count both
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return None
+
+        out = []
+        for pid, sg, name, team, pos, games, sj in rows:
+            row = {"player_id": pid, "stat_group": sg, "name": name, "team": team,
+                   "position": pos, "games": games, "stats": json.loads(sj or "{}")}
+            if prev_date:
+                pj = prev.get((pid, sg))
+                if pj is None:
+                    row["delta"] = None            # new to the panel since prev day
+                else:
+                    old = json.loads(pj)
+                    d = {}
+                    for k, v in row["stats"].items():
+                        a, b = _num(v), _num(old.get(k))
+                        if a is not None and b is not None and a != b:
+                            d[k] = round(a - b, 4)
+                    row["delta"] = d               # {} = no change = didn't play
+            out.append(row)
+
+        return {
+            "league": league, "date": date,
+            **({"delta_vs": prev_date} if delta else {}),
+            "total_rows": total, "returned": len(out), "offset": offset,
+            "players": out,
+            "prove_any_row": f"/api/v1/sports/proof/{league}/{date}/{{player_id}}",
+        }
+    except Exception as e:
+        return JSONResponse(status_code=503, content={
+            "status": "error", "detail": f"snapshot read failed: {str(e)[:120]}"})
+    finally:
+        db.close()
+
+
 # ---------------------------------------------------------------------------
 # Trending Cards — $0.025
 # Top movers by price velocity from the TCG database
