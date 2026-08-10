@@ -97,6 +97,29 @@ def main():
     # that stranded a weekly soul root on 2026-07-19 (fixed there the same way).
     # The push self-heals next hour, but a page for a transient blip is the real
     # cost: alert fatigue is how a genuine outage gets ignored.
+    # ⚠️ DO NOT "OPTIMIZE" THIS LADDER DOWN TO 1x. Tried and reverted 2026-08-10.
+    # I proposed starting at 1x to cut cost, sailorpepe approved it, and MEASUREMENT
+    # KILLED IT on both counts:
+    #   1. 1x CANNOT LAND. `eth_gasPrice` on LiteForge returns EXACTLY the current
+    #      base fee (measured 6 samples: ratio 0.997-1.001), so a 1x tx is priced
+    #      at the base fee at build time and any tick rejects it with "max fee per
+    #      gas less than block base fee". The live 1x attempt failed immediately.
+    #   2. THE MULTIPLIER IS FREE. This chain refunds the excess: a tx with
+    #      gasPrice SET to 6.8060 gwei (3x) paid effectiveGasPrice 2.2745 gwei ==
+    #      the block base fee exactly. So 3x costs the same as 1x and just buys
+    #      headroom. Verified on tx 86df7f7b… (gasUsed 1,105,472, cost 0.002514,
+    #      identical to the base-fee-only cost).
+    # Starting at 1x therefore adds a GUARANTEED failed attempt every hour for
+    # zero saving — and a "failed" line in the log every hour trips the nightly
+    # partial-failure detector, which is the alert fatigue this file's comment
+    # above already warns about.
+    # SEPARATE LESSON worth keeping (it cost four days): on 2026-08-07 this job
+    # started failing with `insufficient funds` because the balance check requires
+    # gas_limit(5,000,000) x gasPrice x mult UPFRONT even though only gasUsed x
+    # baseFee is charged — at 3x that reserved 0.0385 against a 0.0202 balance.
+    # Escalating gas is the right cure for a base-fee miss and exactly the WRONG
+    # one for insufficient funds: a higher multiplier RAISES the reservation and
+    # fails harder. Fix for that is tokens (or a smaller gas limit), never a ladder.
     last_err = None
     for mult in (3, 6, 12):
         try:
