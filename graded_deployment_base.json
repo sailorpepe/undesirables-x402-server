@@ -1,0 +1,16 @@
+{
+  "contract": "0x2f1a99A834de7fAD747F2765B37a29C8997B3b42",
+  "contract_address": "0x2f1a99A834de7fAD747F2765B37a29C8997B3b42",
+  "chain_id": 8453,
+  "rpc": "alchemy-base-mainnet",
+  "deployed_at": 1786325222.769553,
+  "deploy_tx": "ad5a824ab460696f56004226b7ec97e0795b79b5bdabacec3ab716784b8e61b5",
+  "first_root_tx": "35e7df162368dcbc388668de239c9defb859a5017d323949b1ac57c73a8ceb18",
+  "deployer": "0x77B82Fe7ADD725017E106CFE6E26Dc8b37C93Fca",
+  "first_root": "0xa42d45cafd976013c368670b03ebc4a7a2e9f29332cb462e55bca653b8f4a09e",
+  "total_graded_products": 1426,
+  "audit_patch": "de2b673 (renounce guard)",
+  "liteforge_counterpart": "0x6cca6D7727525595D3A5A1197133086507b82f17",
+  "note": "Base mirror of the graded proof tree. Deployed because the tree behind the PAID /api/v1/graded/proof surface was LiteForge-only (same exposure class as the 07-30 merkle flag). graded_merkle_updater.py mirrors each new root, non-blocking.",
+  "explorer": "https://basescan.org/address/0x2f1a99A834de7fAD747F2765B37a29C8997B3b42"
+}
