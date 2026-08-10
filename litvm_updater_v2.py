@@ -27,6 +27,7 @@ DB_PATH = os.path.expanduser("~/Documents/undesirables-mcp-server/.cache/market_
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ABI_PATH = os.path.join(SCRIPT_DIR, "TCGPriceOracleV2_abi.json")
 DEPLOY_PATH = os.path.join(SCRIPT_DIR, "v2_deployment.json")
+CACHE_PATH = os.path.join(SCRIPT_DIR, "v2_last_push_cache.json")
 
 def load_contract_address():
     if not os.path.exists(DEPLOY_PATH):
@@ -90,6 +91,27 @@ def main():
     print(f"  Data date: {data_date}")
     print(f"  Contract:  {contract_address}")
 
+    # SKIP-IF-UNCHANGED (2026-08-10, sailorpepe-approved). The source data
+    # (TCGCSV via the nightly pipeline) changes ONCE per day, so 23 of this
+    # job's 24 hourly pushes wrote byte-identical prices on-chain — measured
+    # at 89% of ALL LiteForge gas burn (0.055 of 0.0617/day). Same pattern as
+    # merkle_root_updater's "Root unchanged — skipping": push only when the
+    # payload differs from what the chain already has. A TWAP of a constant
+    # is the constant; the redundant writes added zero information.
+    # Cache is written ONLY after a confirmed tx (house ordering rule), so a
+    # failed push retries next hour rather than being skipped forever.
+    import hashlib
+    payload_hash = hashlib.sha256(
+        json.dumps([data_date, ids, prices, lows]).encode()).hexdigest()
+    if os.path.exists(CACHE_PATH):
+        try:
+            if json.load(open(CACHE_PATH)).get("payload_hash") == payload_hash:
+                print(f"  Prices unchanged since last push — skipping on-chain push")
+                print(f"  --- Done (no update needed) ---\n")
+                return
+        except (json.JSONDecodeError, OSError):
+            pass  # unreadable cache = push (fail open, never wedge)
+
     # 3x gas buffer + retry. Bare w3.eth.gas_price is fetched BEFORE signing, so a
     # LiteForge base-fee tick between fetch and send kills the push outright:
     #   "max fee per gas less than block base fee: maxFee 10112000, base 10133000"
@@ -126,7 +148,13 @@ def main():
             tx = oracle.functions.batchUpdatePricesOnly(ids, prices, lows).build_transaction({
                 "chainId": CHAIN_ID, "from": wallet,
                 "nonce": w3.eth.get_transaction_count(wallet),
-                "gas": 5000000, "gasPrice": int(w3.eth.gas_price * mult),
+                # 1.8M limit (2026-08-10, was 5M): measured usage is 1.0-1.25M,
+                # so 1.8M keeps ~45% headroom while cutting the UPFRONT balance
+                # reservation (gas_limit x gasPrice x mult) ~3x — that
+                # reservation, not actual cost, is what caused the 08-07..08-10
+                # insufficient-funds failures at low balance. Unused gas is
+                # never charged; the limit only gates the balance check.
+                "gas": 1800000, "gasPrice": int(w3.eth.gas_price * mult),
             })
             signed = w3.eth.account.sign_transaction(tx, private_key)
             tx_hash = w3.eth.send_raw_transaction(getattr(signed, "raw_transaction", None) or signed.rawTransaction)
@@ -142,6 +170,11 @@ def main():
     if receipt.status == 1:
         total = oracle.functions.totalUpdates().call()
         print(f"  ✅ Confirmed (gas: {receipt.gasUsed}, total: {total})")
+        # cache AFTER confirmation only — a failed push must retry next hour
+        with open(CACHE_PATH, "w") as f:
+            json.dump({"payload_hash": payload_hash, "data_date": data_date,
+                       "tx": tx_hash.hex(),
+                       "pushed_at": datetime.now(timezone.utc).isoformat()}, f)
     else:
         print(f"  ❌ Failed! TX: {tx_hash.hex()}")
         sys.exit(1)
