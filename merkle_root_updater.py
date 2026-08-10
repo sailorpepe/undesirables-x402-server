@@ -4,7 +4,7 @@ MerklePriceOracle — Hourly Root Updater
 Rebuilds the Merkle tree from the latest price data and pushes a new root on-chain.
 Cost: ~162K gas per update. Runs hourly via cron.
 """
-import json, os, sys, sqlite3
+import json, os, sys, time, sqlite3
 from datetime import datetime, timezone
 from web3 import Web3
 from eth_abi import encode as abi_encode
@@ -181,15 +181,39 @@ def main():
 
     print(f"  New root: {root_hex[:18]}...")
 
-    # Push on-chain
+    # Push on-chain, with the ESCALATING GAS LADDER (added 2026-08-10 — this
+    # pusher was the LAST HOLDOUT of a failure class already fixed on graded
+    # (08-07) and weather_merkle: a bare w3.eth.gas_price loses the race whenever
+    # the base fee ticks up between building the tx and its inclusion, and an
+    # uncaught Web3RPCError then kills the whole run. Measured today: 2 of 3
+    # new-root pushes died on "max fee per gas less than block base fee" (09:00
+    # and 10:00 UTC) before 11:00 finally landed — an hour of avoidable staleness
+    # per miss on the flagship 286K proof tree. A base-fee miss is transient BY
+    # DEFINITION: the next attempt reads a fresh base fee and multiplies harder.
     oracle = w3.eth.contract(address=addr, abi=abi)
-    nonce = w3.eth.get_transaction_count(wallet)
-    tx = oracle.functions.updateMerkleRoot(root, len(rows)).build_transaction({
-        "chainId": CHAIN, "from": wallet, "nonce": nonce,
-        "gas": 200000, "gasPrice": w3.eth.gas_price,
-    })
-    signed = w3.eth.account.sign_transaction(tx, pk)
-    h = w3.eth.send_raw_transaction(getattr(signed, "raw_transaction", None) or signed.rawTransaction)
+    h = None
+    for attempt in range(4):
+        # PENDING nonce: this wallet is shared with the sibling hourly pushers,
+        # so a confirmed-only nonce can collide with one of their in-flight txs.
+        nonce = w3.eth.get_transaction_count(wallet, "pending")
+        tx = oracle.functions.updateMerkleRoot(root, len(rows)).build_transaction({
+            "chainId": CHAIN, "from": wallet, "nonce": nonce,
+            "gas": 200000, "gasPrice": int(w3.eth.gas_price * (3, 6, 12, 24)[attempt]),
+        })
+        signed = w3.eth.account.sign_transaction(tx, pk)
+        raw = getattr(signed, "raw_transaction", None) or signed.rawTransaction
+        try:
+            h = w3.eth.send_raw_transaction(raw)
+            break
+        except Exception as e:
+            msg = str(e).lower()
+            retryable = ("less than block base fee" in msg or "underpriced" in msg
+                         or "nonce too low" in msg or "already known" in msg
+                         or "fee too low" in msg)
+            if attempt < 3 and retryable:
+                print(f"  gas attempt {(3,6,12,24)[attempt]}x failed ({str(e)[:80]}) — escalating")
+                time.sleep(8); continue
+            print(f"  ❌ push failed: {e}"); sys.exit(1)
     print(f"  TX: {h.hex()}")
     receipt = w3.eth.wait_for_transaction_receipt(h, timeout=120)
 
