@@ -18,7 +18,40 @@ CHAIN = 4441
 DB_PATH = os.path.expanduser("~/Documents/undesirables-mcp-server/.cache/market_memory.sqlite")
 ABI_PATH = os.path.join(SCRIPT_DIR, "GradedPriceOracle_abi.json")
 DEPLOY_PATH = os.path.join(SCRIPT_DIR, "graded_deployment.json")
+BASE_DEPLOY_PATH = os.path.join(SCRIPT_DIR, "graded_deployment_base.json")
 CACHE_PATH = os.path.join(SCRIPT_DIR, "graded_merkle_tree_cache.json")
+
+
+def mirror_to_base(root: bytes, n: int, pk: str):
+    """Mirror the new root to the Base mainnet twin (deployed 2026-08-09).
+
+    NON-BLOCKING by design, same as the merkle and soul Base legs: a Base/RPC
+    problem must never interfere with the primary LiteForge commit. Failures
+    print and return — the nightly healthcheck compares the two chains' roots,
+    so silent drift gets caught there, not here. PENDING nonce (replica lag)
+    + EIP-1559 headroom (base-fee tick), per the 07-31 deploy-night lessons."""
+    with open(BASE_DEPLOY_PATH) as f:
+        addr = json.load(f)["contract"]
+    with open(ABI_PATH) as f:
+        abi = json.load(f)
+    rpc = f"https://base-mainnet.g.alchemy.com/v2/{os.getenv('ALCHEMY_API_KEY')}"
+    w3 = Web3(Web3.HTTPProvider(rpc, request_kwargs={"timeout": 60}))
+    acct = w3.eth.account.from_key(pk)
+    base_fee = w3.eth.get_block("latest")["baseFeePerGas"]
+    tip = max(w3.eth.max_priority_fee, 1_000_000)
+    oracle = w3.eth.contract(address=addr, abi=abi)
+    tx = oracle.functions.updateMerkleRoot(root, n).build_transaction({
+        "chainId": 8453, "from": acct.address,
+        "nonce": w3.eth.get_transaction_count(acct.address, "pending"),
+        "gas": 250000, "maxFeePerGas": base_fee * 3 + tip, "maxPriorityFeePerGas": tip,
+    })
+    signed = w3.eth.account.sign_transaction(tx, pk)
+    h = w3.eth.send_raw_transaction(getattr(signed, "raw_transaction", None) or signed.rawTransaction)
+    receipt = w3.eth.wait_for_transaction_receipt(h, timeout=120)
+    if receipt.status == 1:
+        print(f"  ✅ Base mirror committed (tx {h.hex()[:16]}…, gas {receipt.gasUsed})")
+    else:
+        print(f"  ⚠️ Base mirror tx reverted ({h.hex()}) — LiteForge commit unaffected")
 
 
 def keccak256(data: bytes) -> bytes:
@@ -255,6 +288,14 @@ def main():
             "census": census_list
         }, f)
     print("  Cache updated.")
+
+    # Mirror to Base AFTER the primary commit + cache save succeed — a Base
+    # failure must never poison the LiteForge state or the cache.
+    if os.path.exists(BASE_DEPLOY_PATH):
+        try:
+            mirror_to_base(root, len(rows), pk)
+        except Exception as e:
+            print(f"  ⚠️ Base mirror failed (LiteForge commit unaffected): {e}")
 
     print(f"  --- Done ---\n")
 
