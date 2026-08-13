@@ -148,6 +148,17 @@ def main():
                 rec["resolution_source"] = "kalshi official"
         except Exception:
             pass
+        if result is not None:
+            # LEARNING SIGNAL (2026-08-14, sailorpepe's catch): the official
+            # branch skipped the temperature lookup, so officially-scored rows
+            # recorded the VERDICT but not the DEGREES — and degrees-off is what
+            # per-city bias/sigma calibration learns from. Best-effort fetch;
+            # never blocks settlement.
+            try:
+                actual = fetch_actual_extreme(rec.get("city"), rec.get("target_date"),
+                                              rec.get("market_type") == "HIGH")
+            except Exception:
+                actual = None
         if result is None:
             want_high = rec.get("market_type") == "HIGH"
             actual = fetch_actual_extreme(rec.get("city"), rec.get("target_date"), want_high)
