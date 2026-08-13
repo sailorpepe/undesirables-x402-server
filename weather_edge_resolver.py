@@ -128,14 +128,36 @@ def main():
         if now <= close:
             continue  # market not closed yet
 
-        want_high = rec.get("market_type") == "HIGH"
-        actual = fetch_actual_extreme(rec.get("city"), rec.get("target_date"), want_high)
-        if actual is None:
-            continue  # ASOS unavailable; try again next run
-        yes = market_resolves_yes(rec, actual)
-        if yes is None:
-            continue
-        result = "YES" if yes else "NO"
+        # OFFICIAL RESULT FIRST (2026-08-13). The 08-13 calibration audit proved
+        # ASOS-derived scoring diverged from Kalshi's official settlement on 701
+        # of 3,078 rows — boundary-tie convention (94 ties, ALL scored our way,
+        # 79 wrong) plus rounded-ASOS vs official-CLI discrepancies. The record
+        # scored +5.0% ROI under our arithmetic and -7.1% under the exchange's.
+        # The exchange result IS settlement truth; ASOS is only the fallback for
+        # markets Kalshi has not finalized or no longer serves.
+        result = None
+        actual = None
+        try:
+            import urllib.request as _ur
+            _m = json.loads(_ur.urlopen(
+                "https://api.elections.kalshi.com/trade-api/v2/markets/"
+                + rec["ticker"], timeout=10).read())["market"]
+            _r = (_m.get("result") or "").upper()
+            if _r in ("YES", "NO"):
+                result = _r
+                rec["resolution_source"] = "kalshi official"
+        except Exception:
+            pass
+        if result is None:
+            want_high = rec.get("market_type") == "HIGH"
+            actual = fetch_actual_extreme(rec.get("city"), rec.get("target_date"), want_high)
+            if actual is None:
+                continue  # neither source ready; try again next run
+            yes = market_resolves_yes(rec, actual)
+            if yes is None:
+                continue
+            result = "YES" if yes else "NO"
+            rec["resolution_source"] = "ASOS hourly (rounded) — official unavailable"
         sig = rec.get("signal")
         won = (sig == "BUY_YES" and yes) or (sig == "BUY_NO" and not yes)
         cost = rec.get("cost_cents") or 0
@@ -145,9 +167,10 @@ def main():
         rec["resolved_at"] = now.isoformat()
         rec["actual_temp"] = actual
         rec["market_result"] = result
+        rec["kalshi_result"] = result if rec.get("resolution_source") == "kalshi official" else rec.get("kalshi_result")
         rec["won"] = won
+        rec["won_official"] = won if rec.get("resolution_source") == "kalshi official" else rec.get("won_official")
         rec["pnl_cents"] = pnl
-        rec["resolution_source"] = "ASOS hourly (rounded)"
         newly += 1
 
     with open(LOG_PATH, "w") as f:
