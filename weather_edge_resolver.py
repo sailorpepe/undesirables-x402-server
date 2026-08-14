@@ -170,7 +170,12 @@ def main():
             result = "YES" if yes else "NO"
             rec["resolution_source"] = "ASOS hourly (rounded) — official unavailable"
         sig = rec.get("signal")
-        won = (sig == "BUY_YES" and yes) or (sig == "BUY_NO" and not yes)
+        # BUGFIX 2026-08-14: `yes` only exists in the ASOS-fallback branch; the
+        # official-result branch crashed here with UnboundLocalError — which
+        # silently blocked TODAY'S 14:00 settlement run (the first one that
+        # would have settled v2 bets). Decide from `result`, which both
+        # branches guarantee.
+        won = (sig == "BUY_YES" and result == "YES") or (sig == "BUY_NO" and result == "NO")
         cost = rec.get("cost_cents") or 0
         pnl = (100 - cost) if won else -cost  # cents per 1-contract stake
 
