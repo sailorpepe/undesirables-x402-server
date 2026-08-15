@@ -115,8 +115,34 @@ def main():
 
     now = datetime.now(timezone.utc)
     newly = 0
+    upgraded = 0
     for rec in recs:
         if rec.get("resolved"):
+            # OFFICIAL-UPGRADE PASS (2026-08-15): a row settled by the ASOS
+            # fallback in the window between market close (~05-07Z) and
+            # Kalshi's settlement (~late morning ET) stayed ASOS-scored
+            # FOREVER — and the calibration audit proved ASOS diverges from
+            # official near boundaries. Re-check recent fallback-scored rows
+            # and upgrade them the moment the exchange publishes its result.
+            if rec.get("kalshi_result") is None and rec.get("resolved_at", "") >= (
+                    now.strftime("%Y-%m-%d")[:8] + "01"):
+                try:
+                    import urllib.request as _ur
+                    _m = json.loads(_ur.urlopen(
+                        "https://api.elections.kalshi.com/trade-api/v2/markets/"
+                        + rec["ticker"], timeout=10).read())["market"]
+                    _r = (_m.get("result") or "").upper()
+                    if _r in ("YES", "NO"):
+                        rec["kalshi_result"] = _r
+                        sig_ = rec.get("signal")
+                        w_ = (sig_ == "BUY_YES" and _r == "YES") or (sig_ == "BUY_NO" and _r == "NO")
+                        rec["won_official"] = w_
+                        cost_ = rec.get("cost_cents") or 0
+                        rec["pnl_official_cents"] = (100 - cost_) if w_ else -cost_
+                        rec["resolution_source"] = "kalshi official (upgraded from ASOS)"
+                        upgraded += 1
+                except Exception:
+                    pass
             continue
         ct = rec.get("close_time")
         if not ct:
@@ -230,6 +256,8 @@ def main():
         json.dump(track, f, indent=2)
 
     o = track["overall"]
+    if upgraded:
+        print(f"Upgraded {upgraded} ASOS-scored row(s) to official results.")
     print(f"Resolved {newly} new. Track record: {o['wins']}/{o['n']} "
           f"({o['hit_rate']}%), P&L {o['pnl_cents']}¢, ROI {o['roi_pct']}%. → {TRACK_PATH}")
     return 0
