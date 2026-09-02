@@ -6,12 +6,12 @@ An x402 micropayment-gated API providing **financial intelligence for the $50B+ 
 
 # ⚡ TCG Oracle — AI Card Grading & Market Data
 
-**30 AI endpoints (13 paid via x402) · USDC micropayments on Base · Conformal-calibrated risk forecasts · AI card grading**
+**55 AI endpoints (19 paid via x402) · USDC micropayments on Base/Solana + USDG on Robinhood Chain · Conformal-calibrated risk forecasts · Card-collateral loan terms · AI card grading**
 
 ![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white)
 ![License: BSL-1.1](https://img.shields.io/badge/License-BSL_1.1-red?style=flat-square)
 ![x402](https://img.shields.io/badge/Protocol-x402-00dcff?style=flat-square)
-![Endpoints](https://img.shields.io/badge/Endpoints-30-ff14a0?style=flat-square)
+![Endpoints](https://img.shields.io/badge/Endpoints-55-ff14a0?style=flat-square)
 ![Base Network](https://img.shields.io/badge/Chain-Base_(L2)-0052FF?style=flat-square&logo=coinbase&logoColor=white)
 
 [API Docs](https://the-undesirables.com/docs) · [Live Terminal](https://the-undesirables.com/terminal) · [API Terms](https://the-undesirables.com/api-terms)
@@ -142,7 +142,7 @@ The server automatically registers its JSON schemas with the Coinbase CDP Facili
 
 ## 🔌 API Endpoints
 
-### 30 Endpoints (13 Paid, 17 Free)
+### 55 Endpoints (19 Paid, 36 Free)
 
 #### 💰 Financial Intelligence (Paid)
 
@@ -159,12 +159,17 @@ The server automatically registers its JSON schemas with the Coinbase CDP Facili
 | `GET /api/v1/arb-cross` | **$1.00** | "Any cross-platform prediction market edges?" — Polymarket vs Kalshi NLI |
 | `GET /api/v1/arb-basket` | **$0.50** | "Any guaranteed-profit basket arbs?" — Multi-outcome NO aggregation |
 | `GET /api/v1/arb-weather` | **$0.25** | "Any mispriced weather derivatives?" — NWS vs Kalshi |
+| `GET /api/v1/loan-terms` | **$0.10** | "How much can I safely lend against this card/slab?" — VaR-derived max LTV, liquidation price, liquidity tier, suggested APR premium. Refuses unrateable collateral |
+| `POST /api/v1/loan-monitor` | **$1.00** | "Watch my funded loan" — daily re-mark against the fresh board; HMAC-signed webhook on liquidation breach, margin call, regime shift, risk widening |
+| `GET /api/v1/census` | **$0.05** | "How many slabs of this card are actually circulating?" — cert-verified observed supply (census, not pop report) |
+| `GET /api/v1/sports/forecast` | **$0.05** | Calibrated 7-day player stat bands + grades (MLB/NBA/NFL/NHL/NCAA) |
+| `GET /api/v1/verdict` | **$0.30** | The decision endpoint — buy/hold/avoid with the full evidence chain |
 
 #### 🆓 Free Tier
 
 | Endpoint | What It Does |
 |----------|-------------|
-| `GET /api/v1/search` | Search 446K+ TCG products across 25+ games |
+| `GET /api/v1/search` | Search 455K+ TCG products across 25+ games |
 | `GET /api/v1/market` | Daily market snapshot with top movers |
 | `POST /api/v1/recommend` | **Self-navigating API advisor** — describe your goal, get a workflow |
 | `GET /api/v1/accuracy` | Public prediction accuracy dashboard (MAE, hit rates) |
@@ -176,10 +181,18 @@ The server automatically registers its JSON schemas with the Coinbase CDP Facili
 | `GET /api/v1/collection` | **The Undesirables (UNDSR) NFT** — live supply + public-mint status (4,444 ERC-721A on Ethereum mainnet) |
 | `GET /api/v1/collection/wallet/{address}` | UNDSR mint eligibility + holdings for any wallet |
 | `GET /api/v1/collection/prepare-mint` | Build an **unsigned** mint transaction — you sign with your own wallet; the server never holds keys |
+| `GET /api/v1/forecast` | Daily free board: 250 cards with full conformal bands + VaR |
+| `GET /api/v1/merkle/proof` | Verify any price against the on-chain root — trustless |
+| `GET /api/v1/loan-terms/universe` | The full rated universe for lending (2,000 cards, re-ranked daily) |
+| `GET /api/v1/census/summary` | Observed graded-slab supply totals |
+| `GET /api/v1/sports/leaderboard` · `/api/v1/souls/leaderboard` | Minted souls' on-chain-locked calls, mechanically graded |
+| [`/lending`](https://oracle.the-undesirables.com/lending) | **Loan-Terms explainer** — look up a card, watch the max-LTV math derive step by step |
 
 ---
 
 ## 🔍 Full Model Transparency
+
+**The public scorecard** ([`/api/v1/accuracy`](https://oracle.the-undesirables.com/api/v1/accuracy), refreshed nightly): over the last 30 days **181,358 forecasts matured** and were graded against reality — 90% bands covered **93.3%**, 95% floors held **97.6%**, 99% floors held **99.6%**. Every one of those predictions was merkle-committed on-chain (Base + LitVM LiteForge) *before* its target date, so the table cannot be curated after the fact.
 
 Every paid Oracle response ships with the exact `model_params` used to generate the forecast. Your agent doesn't just get a number — it gets the math:
 
