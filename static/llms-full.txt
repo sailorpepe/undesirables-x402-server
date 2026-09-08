@@ -38,9 +38,11 @@ account, no API key.
 
 - Transport: streamable HTTP (MCP protocol 2025-06-18). Legacy SSE also served.
 - Auth: none.
-- Tools (10): search_tcg_products, market_snapshot, grade_card, grade_or_not,
-  simulate_price, card_forecast, trending_cards, optimize_portfolio,
-  recommend_workflow, oracle_scorecard
+- Tools (22): search_tcg_products, market_snapshot, trending_cards, card_forecast,
+  simulate_price, optimize_portfolio, grade_card, grade_or_not, oracle_scorecard,
+  loan_terms_preview, souls_in_wallet, soul_calls, fantasy_league, sports_board,
+  syndicate_state, syndicate_move, syndicate_leaderboard, technocore_rooms,
+  technocore_room, technocore_note, technocore_info, recommend_workflow
 - Free tools answer immediately. Paid tools return an x402 payment_required carrying
   amount, network, and payTo — settle with a funded wallet and retry in the same
   session. Settlement only occurs on a successful response.
@@ -52,7 +54,7 @@ account, no API key.
 ### 1. The Oracle Terminal (x402 API)
 A machine-first intelligence API that bypasses traditional API keys in favor of the x402 protocol (USDC micropayments on the Base network). It is fully indexed on the Agentic Market / Coinbase CDP Facilitator.
 It serves two primary functions:
-- **TCG Intelligence:** Houses a massive database of 446K+ Trading Card Game products. Offers AI vision grading (predicting PSA/Beckett scores) and conformal-calibrated risk forecasting (honest VaR/CVaR plus Safe-Hold & Momentum letter grades; Monte Carlo opt-in) for physical assets.
+- **TCG Intelligence:** Houses a massive database of 456K+ Trading Card Game products. Offers AI vision grading (predicting PSA/Beckett scores) and conformal-calibrated risk forecasting (honest VaR/CVaR plus Safe-Hold & Momentum letter grades; Monte Carlo opt-in) for physical assets.
 - **Predicative Market Arbitrage:** Seamlessly bridges traditional crypto data with prediction markets, offering cross-platform arbitrage scanning (Polymarket vs Kalshi), weather data edges, and basket arbs.
 
 ### 2. Open-Source Infrastructure (Meme Merchants)
