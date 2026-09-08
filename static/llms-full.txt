@@ -8,9 +8,28 @@ Source: https://oracle.the-undesirables.com/static/llms-full.txt
 The Undesirables is an advanced infrastructure collective bridging the gap between physical reality, financial markets, and autonomous agent systems. The ecosystem is defined by its push toward frictionless machine-to-machine micropayments (x402), local inference, and granting cryptographic behavioral "souls" to AI agents.
 
 - Primary API: https://oracle.the-undesirables.com
+- AUTHORITY NOTE: any count in this document (products, endpoints, prices) is a
+  snapshot. GET https://oracle.the-undesirables.com/ derives the live numbers
+  from the server's own routes and database and is ALWAYS right; the compact
+  per-endpoint index is /llms.txt.
 - MCP Endpoint: https://mcp.the-undesirables.com (hosted, no install, no auth)
 - Merchant: 0x642e8a7C289381f24f0395e0539f0bA41c74Cc1B (Base Network)
 - Repositories: https://gitlab.com/meme-merchants
+
+## New Since This Document's Last Full Revision (pointers, not counts)
+
+- **Sports oracle**: daily player-stat forecasts with conformal bands, movers
+  board (/sports), per-player pages, on-chain committed panels AND forecasts.
+  Free: /api/v1/sports/{board,players,leaderboard}. Paid: /api/v1/sports/forecast.
+- **Souls leaderboards**: /souls/leaderboard (weekly TCG card calls since
+  2026-07-01, locked on-chain before outcomes, graded 30d later, skill-ranked)
+  and /sports/leaderboard (weekly OVER/UNDER player-stat calls).
+- **Observed slab census**: /api/v1/census/summary (free totals) and
+  /api/v1/census?product_id= (paid per-card circulating graded supply —
+  a census, not a pop report).
+- **Graded honesty contract**: /api/v1/graded declares price_basis (asks vs
+  sales); /api/v1/graded/sales serves realized-sale records; /api/v1/accuracy
+  publishes our own blind grading study, including its unflattering verdict.
 
 ## Fastest Path for an Agent — Hosted MCP
 
@@ -21,7 +40,7 @@ account, no API key.
 - Auth: none.
 - Tools (10): search_tcg_products, market_snapshot, grade_card, grade_or_not,
   simulate_price, card_forecast, trending_cards, optimize_portfolio,
-  recommend_workflow, check_accuracy
+  recommend_workflow, oracle_scorecard
 - Free tools answer immediately. Paid tools return an x402 payment_required carrying
   amount, network, and payTo — settle with a funded wallet and retry in the same
   session. Settlement only occurs on a successful response.
