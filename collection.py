@@ -153,6 +153,17 @@ def wallet_status(address):
     from web3 import Web3
     addr = Web3.to_checksum_address(address)
 
+    # ERC721A reverts balanceOf(address(0)) with BalanceQueryForZeroAddress()
+    # (selector 0x8f4eb604). Without this guard the raw revert surfaced as a
+    # 503 "chain read failed", which blames our RPC for a bad input — the chain
+    # is fine, the address is not a wallet. The zero address is also one of the
+    # most common probes and form defaults, so it is worth saying plainly.
+    if int(addr, 16) == 0:
+        raise ValueError(
+            "The zero address is the burn address, not a wallet — "
+            "ERC721A rejects balanceOf for it. Pass a real wallet address."
+        )
+
     def _fetch():
         c = _get_contract()
         inv = c.functions.invites(_zero32()).call()
@@ -201,6 +212,11 @@ def prepare_mint_tx(quantity, to=None):
 
     if to:
         to_addr = Web3.to_checksum_address(to)
+        if int(to_addr, 16) == 0:
+            raise ValueError(
+                "Refusing to build a mint to the zero address — it would revert "
+                "on-chain and burn your gas. Omit `to` to mint to yourself."
+            )
         data = c.encode_abi("mintTo", args=[auth, quantity, to_addr, zero_addr, b""])
     else:
         data = c.encode_abi("mint", args=[auth, quantity, zero_addr, b""])
