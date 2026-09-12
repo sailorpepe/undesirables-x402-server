@@ -26,21 +26,30 @@ IMG = "https://product-images.tcgplayer.com/fit-in/437x437/84198.jpg"   # real c
 PUDGY = "0xBd3531dA5CF5857e7CfAA92426877b022e612cf8"                     # real ERC-721 (mainnet)
 
 STEP1 = [
-    ("simulate",  "$0.015", "GET",  f"{BASE}/api/v1/simulate?card_name=Charizard&current_price=300&days=30", None),
-    ("market",    "$0.025", "GET",  f"{BASE}/api/v1/market?game=Pokemon", None),
 ]
 SWEEP_EXTRA = [
-    ("trending",           "$0.025", "GET",  f"{BASE}/api/v1/trending?limit=10", None),
+    ("sports/forecast",     "$0.05",  "GET",  f"{BASE}/api/v1/sports/forecast?league=mlb&player_id=660271", None),
     ("coin-history",       "$0.05",  "GET",  f"{BASE}/api/v1/coin-history?coin_id=pepe", None),
     ("crypto-oracle",      "$0.05",  "GET",  f"{BASE}/api/v1/crypto-oracle?contract_address={PUDGY}", None),
     ("grade",              "$0.10",  "GET",  f"{BASE}/api/v1/grade?image_url={IMG}&game=Pokemon", None),
     ("grade-or-not",       "$0.10",  "GET",  f"{BASE}/api/v1/grade-or-not?card_name=Base%20Set%20Charizard%20Holo", None),
-    ("phygital/arbitrage", "$0.10",  "GET",  f"{BASE}/api/v1/phygital/arbitrage", None),
-    ("arb-weather",        "$0.25",  "GET",  f"{BASE}/api/v1/arb-weather", None),
-    ("arb-basket",         "$0.50",  "GET",  f"{BASE}/api/v1/arb-basket", None),
-    ("portfolio-optimize", "$0.50",  "GET",  f"{BASE}/api/v1/portfolio-optimize?cards=Charizard,Pikachu,Blastoise&budget=1000", None),
+    ("census",             "$0.05",  "GET",  f"{BASE}/api/v1/census?product_id=84198", None),
+    ("loan-terms",         "$0.10",  "GET",  f"{BASE}/api/v1/loan-terms?product_id=566544&grade=PSA+10&term_days=30", None),
+    # verdict was NEVER in the sweep (found 2026-08-26: its Bazaar listing froze
+    # at 07-26 while every swept endpoint refreshed) — a listed paid endpoint
+    # that no sweep touches can only ever go stale.
+    # product_id, not card_name: the name form 404'd AFTER payment on 08-26
+    # (name resolution found nothing). 84198 = Charizard Star (Delta Species),
+    # a blue-chip continuously priced in the daily panel.
+    # POST, and it works (2026-08-28, corrected): a mid-flight theory said POST
+    # settles can't refresh a CDP listing — FALSIFIED. The 01:59:02Z POST settle
+    # credited at 02:00:36Z (calls 1->2); the index merely published it ~5h later.
+    # CDP's lastCalledAt records the CALL time, not the publish time, so a listing
+    # that looks stale may already be credited — never re-spend on that inference.
+    # Keeping POST because it is the PROVEN paid path end-to-end; the GET variant
+    # (?image_urls=…) exists for CDP indexing but has never been paid-tested, and
+    # swapping a proven route for an unproven one is how you buy a 404 after payment.
     ("batch-triage",       "$0.50",  "POST", f"{BASE}/api/v1/batch-triage", {"image_urls": IMG}),
-    ("arb-cross",          "$1.00",  "GET",  f"{BASE}/api/v1/arb-cross?min_edge=3.0", None),
 ]
 
 
@@ -88,7 +97,37 @@ async def main():
     client = x402Client()
     register_exact_evm_client(client, EthAccountSigner(Account.from_key(pk)))
     which = sys.argv[1] if len(sys.argv) > 1 else "step1"
-    targets = STEP1 if which == "step1" else STEP1 + SWEEP_EXTRA
+    if which == "step1":
+        targets = STEP1
+    elif which == "only":
+        # targeted paid run: `x402_smoke.py only name1,name2` — spend on exactly
+        # these rows (added 2026-08-26 to rescue the 5 frozen listings without
+        # re-paying the 8 that already settled that morning)
+        names = set(sys.argv[2].split(","))
+        targets = [t for t in STEP1 + SWEEP_EXTRA if t[0] in names]
+        assert targets, f"no sweep rows match {sorted(names)}"
+        missing = names - {t[0] for t in targets}
+        assert not missing, f"unknown sweep rows: {sorted(missing)}"
+    else:
+        targets = STEP1 + SWEEP_EXTRA
+    # RUNTIME GUARD (2026-09-12): the oracle retires (410) and suspends (200, no
+    # charge) routes over time; a sweep row that outlives its route either wastes
+    # a call or, worse, records a "settlement" that never happened. Only rows
+    # whose path the live root manifest lists as PAID are attempted.
+    try:
+        import urllib.request as _ur, json as _json
+        _root = _json.load(_ur.urlopen(_ur.Request(f"{BASE}/", headers={"User-Agent": "x402-smoke/1.0"}), timeout=30))
+        _paid = {e["path"] for e in _root["endpoints"]["paid"]}
+        _keep, _drop = [], []
+        for t in targets:
+            _path = t[3].split("?", 1)[0].replace(BASE, "")
+            (_keep if _path in _paid else _drop).append(t)
+        if _drop:
+            print(f"[guard] skipping {len(_drop)} row(s) the oracle no longer sells: {[t[0] for t in _drop]}")
+        targets = _keep
+    except Exception as _e:
+        print(f"[guard] could not read the live manifest ({str(_e)[:60]}) — refusing to sweep")
+        return
     results = []
     async with httpx.AsyncClient(timeout=180.0) as http:
         for t in targets:
