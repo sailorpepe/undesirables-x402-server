@@ -6,7 +6,7 @@ An x402 micropayment-gated API providing **financial intelligence for the $50B+ 
 
 # ⚡ TCG Oracle — AI Card Grading & Market Data
 
-**55 AI endpoints (19 paid via x402) · USDC micropayments on Base/Solana + USDG on Robinhood Chain · Conformal-calibrated risk forecasts · Card-collateral loan terms · AI card grading**
+**48 endpoints listed — 10 paid via x402 · 38 free · 7 suspended while the USD price panel is frozen (since 2026-09-07) · USDC micropayments on Base/Solana + USDG on Robinhood Chain · Conformal-calibrated risk forecasts · Card-collateral loan terms · AI card grading**
 
 ![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white)
 ![License: BSL-1.1](https://img.shields.io/badge/License-BSL_1.1-red?style=flat-square)
@@ -142,7 +142,9 @@ The server automatically registers its JSON schemas with the Coinbase CDP Facili
 
 ## 🔌 API Endpoints
 
-### 55 Endpoints (19 Paid, 36 Free)
+### 48 Endpoints (10 Paid · 38 Free · 7 Suspended)
+
+> **USD panel frozen 2026-09-07.** Products whose core output is the USD price panel are *suspended* — they answer `200 {"status":"suspended"}` and do not charge — and reference lookups carry a `usd_panel {frozen, as_of}` block. Live today: graded-slab lending, sports, Japanese two-sided quotes, graded asks, census, crypto, souls. `GET /` is authoritative for counts.
 
 #### 💰 Financial Intelligence (Paid)
 
@@ -156,9 +158,6 @@ The server automatically registers its JSON schemas with the Coinbase CDP Facili
 | `GET /api/v1/portfolio-optimize` | **$0.50** | **SUSPENDED 2026-09-12** — USD panel frozen 2026-09-07; returns `200 {status: suspended}`, not charged, until a live USD series exists. "How should I allocate my budget?" — Markowitz mean-variance + Merton Jump-Diffusion |
 | `GET /api/v1/crypto-oracle` | **$0.05** | "What's this NFT collection worth?" — Alchemy floor + Merton Jump-Diffusion |
 | `GET /api/v1/coin-history` | **$0.05** | "Where is this token going?" — CoinGecko OHLC + Monte Carlo |
-| `GET /api/v1/arb-cross` | **$1.00** | "Any cross-platform prediction market edges?" — Polymarket vs Kalshi NLI |
-| `GET /api/v1/arb-basket` | **$0.50** | "Any guaranteed-profit basket arbs?" — Multi-outcome NO aggregation |
-| `GET /api/v1/arb-weather` | **$0.25** | "Any mispriced weather derivatives?" — NWS vs Kalshi |
 | `GET /api/v1/loan-terms` | **$0.10** | "How much can I safely lend against this slab?" — graded-slab terms (v2, 2026-09-12): live value basis (realized sales › delisting-inferred sales › haircut ask), VaR-derived max LTV from the underlying card's 14-month print history, liquidation price, census liquidity tier, suggested APR premium. Raw-card quotes are no longer issued — that price level froze 2026-09-07. |
 | `POST /api/v1/loan-monitor` | **$1.00** | "Watch my funded loan" — graded slabs only; re-marked daily against the live graded basis; HMAC-signed webhook on liquidation breach, margin call, regime shift, risk widening or lost coverage |
 | `GET /api/v1/census` | **$0.05** | "How many slabs of this card are actually circulating?" — cert-verified observed supply (census, not pop report) |
@@ -264,10 +263,6 @@ ALCHEMY_API_KEY=your_alchemy_key
 
 # CoinGecko API Key (Required for /api/v1/coin-history — free tier)
 COINGECKO_API_KEY=your_coingecko_key
-
-# Casper RPC Configuration
-CSPR_API_KEY=your_cspr_api_key
-CASPER_PEM_PATH=/absolute/path/to/casper_wallet.pem
 
 # Server Config
 HOST=0.0.0.0
