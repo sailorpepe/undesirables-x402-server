@@ -38,8 +38,9 @@ account, no API key.
 
 - Transport: streamable HTTP (MCP protocol 2025-06-18). Legacy SSE also served.
 - Auth: none.
-- Tools (22): search_tcg_products, market_snapshot, trending_cards, card_forecast,
-  simulate_price, optimize_portfolio, grade_card, grade_or_not, oracle_scorecard,
+- Tools (22): search_tcg_products, market_snapshot*, trending_cards*, card_forecast,
+  simulate_price*, optimize_portfolio* (* = suspended while the USD panel is frozen —
+  the tool answers {"status":"suspended"} and does not charge), grade_card, grade_or_not, oracle_scorecard,
   loan_terms_preview, souls_in_wallet, soul_calls, fantasy_league, sports_board,
   syndicate_state, syndicate_move, syndicate_leaderboard, technocore_rooms,
   technocore_room, technocore_note, technocore_info, recommend_workflow
@@ -90,3 +91,37 @@ If an AI attempts to operate without this license, it receives a strict `MISSING
 ## Legal Disclaimer
 **FOR ENTERTAINMENT AND EDUCATIONAL PURPOSES ONLY.**
 The models, algorithms, and market data provided by The Undesirables (including but not limited to Monte Carlo simulations, AI grading estimates, and arbitrage detection tools) do not constitute financial advice, investment recommendations, or guaranteed pricing. Cryptocurrency, prediction markets, and physical asset trading involve significant risk of loss. AI models are strictly probabilistic and subject to hallucination or statistical error. Users (and autonomous agents acting on behalf of users) assume total responsibility for any execution or capital deployment.
+
+---
+
+## Japanese-print cards
+24 Japanese trading card games, ~3,600 sets, 365K+ cards, refreshed daily (live counts: GET / -> panels.japanese).
+167,137 of them carry a TWO-SIDED dealer quote -- an asking price and a buyback
+bid -- which no English-language feed publishes. Per-card lookup:
+  GET /jp/card/{game}/{set_code}/{card_id}
+game is one of: poc ygo opc ua ws wsr vg dm bs digi sev gcg hocg wx yrd zx lo re
+xs chaos ei fe gab pm. card_id is unique only WITHIN a set, so set_code is
+required -- omitting it resolves to the wrong card.
+
+Read the bid as a REFERENCE RATE, not an offer. It is one Japanese retailer's
+quote, settled domestically in yen; you cannot transact at it. There is no
+resting size or queue behind either number, so this is not an order book. Lookup
+only: there is deliberately no bulk listing route for this data.
+
+---
+
+## Trademarks and affiliation
+The Undesirables is an INDEPENDENT service. It is not affiliated with, sponsored
+by, endorsed by, or connected to TCGplayer, eBay, The Pokemon Company, Nintendo,
+Creatures, GAME FREAK, Konami, Bandai, Bushiroad, Wizards of the Coast, Hasbro,
+Ravensburger, PSA, BGS, SGC, or any card publisher, marketplace, retailer or
+grading company named anywhere in this document.
+
+All product names, game titles, company names, logos and trademarks are the
+property of their respective owners. They appear here only to identify the actual
+products this service prices -- nominative use -- and never to indicate origin,
+sponsorship or endorsement. "product_id" values are TCGplayer catalogue numbers,
+used as identifiers only.
+
+Prices are our own observations and derived figures. This service claims no rights
+in any underlying price data and does not redistribute any provider's dataset.
