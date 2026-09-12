@@ -22,7 +22,7 @@ SPEND GUARDS (rule 13: never automate spending without a run-once guard):
   - If the Bazaar API is unreachable/unparseable we DO NOTHING (fail-safe:
     no data -> no spend) — the stack healthcheck alarm remains the backstop.
   - One sweep per invocation, cron'd once a day: worst case ~$3.37/day is
-    impossible; steady state is ~$3.37 every ~21 days (~$5/month).
+    impossible; steady state is ~$3.67 every ~21 days (~$5/month; +verdict $0.30 added 2026-08-26).
 """
 import fcntl
 import json
@@ -76,16 +76,31 @@ def oldest_settle_age():
         req = urllib.request.Request(DISCOVERY, headers={"User-Agent": "undesirables-keepalive/1.0"})
         d = json.load(urllib.request.urlopen(req, timeout=30))
         items = d.get("items") or d.get("resources") or []
+        # ONLY listings the oracle still SELLS (2026-09-12). Retired (410) and
+        # suspended (200, no charge) routes stay in the Bazaar index until it
+        # drops them at 30d, and they can never be re-settled — measuring the
+        # stalest of THOSE would trigger a sweep every day from ~day 21 forever.
+        try:
+            _r = urllib.request.Request("https://oracle.the-undesirables.com/",
+                                        headers={"User-Agent": "undesirables-keepalive/1.0"})
+            _paid = {e["path"] for e in json.load(urllib.request.urlopen(_r, timeout=30))["endpoints"]["paid"]}
+        except Exception as _e:
+            log(f"oracle manifest unreadable ({str(_e)[:60]}) — refusing to spend on no data")
+            return None, 0
+        from urllib.parse import urlparse as _up
+        live = [i for i in items if _up(i.get("resource") or "").path in _paid]
         stamps = []
-        for i in items:
+        for i in live:
             ts = (i.get("quality") or {}).get("lastCalledAt")
             if ts:
                 stamps.append(datetime.fromisoformat(ts.replace("Z", "+00:00")))
+        if len(live) != len(items):
+            log(f"Bazaar: {len(items) - len(live)} indexed listing(s) are retired/suspended — not counted")
         if not stamps:
             return None, 0
         oldest = min(stamps)
         age = (datetime.now(timezone.utc) - oldest).days
-        return age, len(items)
+        return age, len(live)
     except Exception as e:
         log(f"Bazaar discovery unreadable ({str(e)[:80]}) — refusing to spend on no data")
         return None, 0
@@ -121,7 +136,7 @@ def main():
         return
 
     # due — run the sweep ONCE (x402_smoke never retries paid failures)
-    log("sweep due — running x402_smoke sweep (~$3.37)")
+    log("sweep due — running x402_smoke sweep (~$3.67)")
     py = os.path.join(X, "venv", "bin", "python")
     r = subprocess.run([py, os.path.join(X, "scripts", "x402_smoke.py"), "sweep"],
                        capture_output=True, text=True, timeout=900)
@@ -133,6 +148,16 @@ def main():
     state["last_result"] = "ok" if ok else f"exit {r.returncode}"
     json.dump(state, open(STATE, "w"))
     log(f"sweep finished: {'OK' if ok else 'FAILED rc=' + str(r.returncode)}")
+    # PERSIST THE PER-ENDPOINT RESULT (2026-07-30). Previously `tail` went only
+    # to the ntfy push, so when batch-triage silently failed to refresh in the
+    # 07-26 sweep there was no local record of WHY — the sweep exited 0 because
+    # one endpoint failing is not a script failure. A paid sweep whose outcome
+    # cannot be reconstructed a week later is money spent for no evidence.
+    for line in (r.stdout or "").strip().splitlines()[-25:]:
+        log(f"  sweep| {line}")
+    if r.stderr:
+        for line in r.stderr.strip().splitlines()[-8:]:
+            log(f"  sweep-err| {line}")
     if ok:
         ntfy("Bazaar keepalive: sweep settled",
              f"Self-settlement sweep ran (stalest listing was {age}d old).\n"
