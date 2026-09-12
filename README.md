@@ -150,10 +150,10 @@ The server automatically registers its JSON schemas with the Coinbase CDP Facili
 |----------|-------|----------------|
 | `GET /api/v1/grade` | **$0.10** | "What PSA/Beckett grade would this card get?" — 3-stage pipeline: Vision LLM + OpenCV centering + BGS capping. Includes free ROI verdict. |
 | `GET /api/v1/grade-or-not` | **$0.10** | "Should I grade this card?" — PSA fee schedule × predicted grade × graded market value = GO/NO-GO |
-| `GET /api/v1/simulate` | **$0.015** | "What will this card be worth in 90 days?" — conformal-calibrated risk forecast (default): honest VaR/CVaR, regime-aware percentile bands, plus Safe-Hold & Momentum letter grades. Monte Carlo GBM/Merton opt-in via `model=` |
-| `GET /api/v1/trending` | **$0.025** | "What's moving right now?" — Top 50 cards by 30-day sales volume and price velocity |
+| `GET /api/v1/simulate` | **$0.015** | **SUSPENDED 2026-09-12** — USD panel frozen 2026-09-07; returns `200 {status: suspended}`, not charged, until a live USD series exists. "What will this card be worth in 90 days?" — conformal-calibrated risk forecast (default): honest VaR/CVaR, regime-aware percentile bands, plus Safe-Hold & Momentum letter grades. Monte Carlo GBM/Merton opt-in via `model=` |
+| `GET /api/v1/trending` | **$0.025** | **SUSPENDED 2026-09-12** — USD panel frozen 2026-09-07; returns `200 {status: suspended}`, not charged, until a live USD series exists. "What's moving right now?" — Top 50 cards by 30-day sales volume and price velocity |
 | `POST /api/v1/batch-triage` | **$0.50** | "Which of these 20 cards should I grade first?" — Profit-ranked grading triage |
-| `GET /api/v1/portfolio-optimize` | **$0.50** | "How should I allocate my budget?" — Markowitz mean-variance + Merton Jump-Diffusion |
+| `GET /api/v1/portfolio-optimize` | **$0.50** | **SUSPENDED 2026-09-12** — USD panel frozen 2026-09-07; returns `200 {status: suspended}`, not charged, until a live USD series exists. "How should I allocate my budget?" — Markowitz mean-variance + Merton Jump-Diffusion |
 | `GET /api/v1/crypto-oracle` | **$0.05** | "What's this NFT collection worth?" — Alchemy floor + Merton Jump-Diffusion |
 | `GET /api/v1/coin-history` | **$0.05** | "Where is this token going?" — CoinGecko OHLC + Monte Carlo |
 | `GET /api/v1/arb-cross` | **$1.00** | "Any cross-platform prediction market edges?" — Polymarket vs Kalshi NLI |
@@ -163,14 +163,14 @@ The server automatically registers its JSON schemas with the Coinbase CDP Facili
 | `POST /api/v1/loan-monitor` | **$1.00** | "Watch my funded loan" — graded slabs only; re-marked daily against the live graded basis; HMAC-signed webhook on liquidation breach, margin call, regime shift, risk widening or lost coverage |
 | `GET /api/v1/census` | **$0.05** | "How many slabs of this card are actually circulating?" — cert-verified observed supply (census, not pop report) |
 | `GET /api/v1/sports/forecast` | **$0.05** | Calibrated 7-day player stat bands + grades (MLB/NBA/NFL/NHL/NCAA) |
-| `GET /api/v1/verdict` | **$0.30** | The decision endpoint — buy/hold/avoid with the full evidence chain |
+| `GET /api/v1/verdict` | **$0.30** | **SUSPENDED 2026-09-12** — USD panel frozen 2026-09-07; returns `200 {status: suspended}`, not charged, until a live USD series exists. The decision endpoint — buy/hold/avoid with the full evidence chain |
 
 #### 🆓 Free Tier
 
 | Endpoint | What It Does |
 |----------|-------------|
 | `GET /api/v1/search` | Search 455K+ TCG products across 25+ games |
-| `GET /api/v1/market` | Daily market snapshot with top movers |
+| `GET /api/v1/market` | Daily market snapshot with top movers | **SUSPENDED 2026-09-12** — USD panel frozen 2026-09-07; returns `200 {status: suspended}`, not charged, until a live USD series exists.  
 | `POST /api/v1/recommend` | **Self-navigating API advisor** — describe your goal, get a workflow |
 | `GET /api/v1/accuracy` | Public prediction accuracy dashboard (MAE, hit rates) |
 | `POST /api/v1/accuracy/report` | Report your actual PSA/BGS grade vs our prediction |
