@@ -56,13 +56,13 @@
         <h2>Free Endpoints</h2>
         <ul>
             <li><a href="/api/v1/search?query=charizard">Search Cards</a>: 370K+ TCG products</li>
-            <li><a href="/api/v1/market?game=Pokemon">Market Dashboard</a>: Daily price snapshots</li>
+            <li><b>SUSPENDED 2026-09-12 (USD panel frozen; not charged)</b> — <a href="/api/v1/market?game=Pokemon">Market Dashboard</a>: Daily price snapshots</li>
         </ul>
 
         <h2>Paid Endpoints — TCG Intelligence</h2>
         <ul>
             <li><a href="/api/v1/grade">Grade Card</a> ($0.10): AI vision grading</li>
-            <li><a href="/api/v1/simulate">Monte Carlo</a> ($0.015): Stochastic forecasting</li>
+            <li><b>SUSPENDED 2026-09-12 (USD panel frozen; not charged)</b> — <a href="/api/v1/simulate">Monte Carlo</a> ($0.015): Stochastic forecasting</li>
             <li><a href="/api/v1/crypto-oracle">Crypto Oracle</a> ($0.05): NFT Monte Carlo</li>
             <li><a href="/api/v1/coin-history">Coin History</a> ($0.05): CoinGecko + forecast</li>
         </ul>
@@ -85,11 +85,11 @@
             <li><strong><a href="https://gitlab.com/meme-merchants/undesirables-x402-server">undesirables-x402-server</a></strong>: This very server. A Coinbase x402 micropayment-gated API proxy for The Undesirables TCG Oracle and Shroomy Arbitrage engines.</li>
         </ul>
 
-        <h2>Training Datasets & Open Data</h2>
-        <p>To supercharge AI models looking to fine-tune on trading card dimensions, historical pricing schemas, and cross-platform spread data, our datasets are permanently open-sourced:</p>
-        <ul>
-            <li><a href="https://www.kaggle.com/datasets/sailorpepe/tcg-market-intelligence">TCG Market Intelligence Dataset (Kaggle)</a></li>
-        </ul>
+        <h2>Data Sources &amp; Attribution</h2>
+        <p>Card prices originate with TCGplayer. We hold no rights in the underlying price
+        data and claim none. The forecasting, risk calibration, letter grades and on-chain
+        proofs are our own work. Graded figures are <em>asks</em> from active listings via
+        eBay's official Browse API, never sold prices.</p>
 
         <h2>Discovery</h2>
         <ul>
@@ -99,5 +99,35 @@
             <li><a href="/static/llms-full.txt">Full Ecosystem Protocol (llms-full.txt)</a></li>
         </ul>
     </div>
+    <div>
+        <h2>Japanese-print cards</h2>
+        <p>24 Japanese trading card games, 3,596 sets, 364,836 cards, refreshed daily.
+        167,137 of them carry a <strong>two-sided dealer quote</strong> &mdash; an asking price
+        and a buyback bid &mdash; which no English-language feed publishes. Per-card lookup at
+        <code>/jp/card/{game}/{set_code}/{card_id}</code>. <code>card_id</code> is unique only
+        <em>within a set</em>, so <code>set_code</code> is required; omitting it resolves to the
+        wrong card.</p>
+        <p>Read the bid as a <strong>reference rate, not an offer</strong>. It is one Japanese
+        retailer's quote, settled domestically in yen &mdash; you cannot transact at it. There is
+        no resting size or queue behind either number, so it is not an order book. Lookup only:
+        there is deliberately no bulk listing route for this data.</p>
+    </div>
+
+    <div>
+        <h2>Trademarks and affiliation</h2>
+        <p><strong>The Undesirables is an independent service.</strong> It is not affiliated with,
+        sponsored by, endorsed by, or connected to TCGplayer, eBay, The Pok&eacute;mon Company,
+        Nintendo, Creatures, GAME FREAK, Konami, Bandai, Bushiroad, Wizards of the Coast, Hasbro,
+        Ravensburger, PSA, BGS, SGC, or any card publisher, marketplace, retailer or grading
+        company named anywhere on this page.</p>
+        <p>All product names, game titles, company names, logos and trademarks are the property of
+        their respective owners. They appear here only to identify the actual products this service
+        prices &mdash; nominative use &mdash; and never to indicate origin, sponsorship or
+        endorsement. <code>product_id</code> values are TCGplayer catalogue numbers, used as
+        identifiers only.</p>
+        <p>Prices are our own observations and derived figures. This service claims no rights in any
+        underlying price data and does not redistribute any provider's dataset.</p>
+    </div>
+
 </body>
 </html>
