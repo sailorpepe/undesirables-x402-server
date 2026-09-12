@@ -159,8 +159,8 @@ The server automatically registers its JSON schemas with the Coinbase CDP Facili
 | `GET /api/v1/arb-cross` | **$1.00** | "Any cross-platform prediction market edges?" — Polymarket vs Kalshi NLI |
 | `GET /api/v1/arb-basket` | **$0.50** | "Any guaranteed-profit basket arbs?" — Multi-outcome NO aggregation |
 | `GET /api/v1/arb-weather` | **$0.25** | "Any mispriced weather derivatives?" — NWS vs Kalshi |
-| `GET /api/v1/loan-terms` | **$0.10** | "How much can I safely lend against this card/slab?" — VaR-derived max LTV, liquidation price, liquidity tier, suggested APR premium. Refuses unrateable collateral |
-| `POST /api/v1/loan-monitor` | **$1.00** | "Watch my funded loan" — daily re-mark against the fresh board; HMAC-signed webhook on liquidation breach, margin call, regime shift, risk widening |
+| `GET /api/v1/loan-terms` | **$0.10** | "How much can I safely lend against this slab?" — graded-slab terms (v2, 2026-09-12): live value basis (realized sales › delisting-inferred sales › haircut ask), VaR-derived max LTV from the underlying card's 14-month print history, liquidation price, census liquidity tier, suggested APR premium. Raw-card quotes are no longer issued — that price level froze 2026-09-07. |
+| `POST /api/v1/loan-monitor` | **$1.00** | "Watch my funded loan" — graded slabs only; re-marked daily against the live graded basis; HMAC-signed webhook on liquidation breach, margin call, regime shift, risk widening or lost coverage |
 | `GET /api/v1/census` | **$0.05** | "How many slabs of this card are actually circulating?" — cert-verified observed supply (census, not pop report) |
 | `GET /api/v1/sports/forecast` | **$0.05** | Calibrated 7-day player stat bands + grades (MLB/NBA/NFL/NHL/NCAA) |
 | `GET /api/v1/verdict` | **$0.30** | The decision endpoint — buy/hold/avoid with the full evidence chain |
@@ -183,10 +183,10 @@ The server automatically registers its JSON schemas with the Coinbase CDP Facili
 | `GET /api/v1/collection/prepare-mint` | Build an **unsigned** mint transaction — you sign with your own wallet; the server never holds keys |
 | `GET /api/v1/forecast` | Daily free board: 250 cards with full conformal bands + VaR |
 | `GET /api/v1/merkle/proof` | Verify any price against the on-chain root — trustless |
-| `GET /api/v1/loan-terms/universe` | The full rated universe for lending (2,000 cards, re-ranked daily) |
+| `GET /api/v1/loan-terms/universe` | The rated universe for lending — every graded slab with a live value basis (~1,100), census liquidity tier, refreshed daily |
 | `GET /api/v1/census/summary` | Observed graded-slab supply totals |
 | `GET /api/v1/sports/leaderboard` · `/api/v1/souls/leaderboard` | Minted souls' on-chain-locked calls, mechanically graded |
-| [`/lending`](https://oracle.the-undesirables.com/lending) | **Loan-Terms explainer** — look up a card, watch the max-LTV math derive step by step |
+| [`/lending`](https://oracle.the-undesirables.com/lending) | **Loan-Terms explainer** — look up a graded slab, watch the max-LTV math derive step by step |
 
 ---
 
