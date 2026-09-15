@@ -32,7 +32,7 @@ An x402 micropayment-gated API providing **financial intelligence for the $50B+ 
 https://mcp.the-undesirables.com
 ```
 
-No install, no account, no API key. **12 tools** over streamable HTTP (MCP protocol
+No install, no account, no API key. **27 tools** over streamable HTTP (MCP protocol
 `2025-06-18`; legacy SSE also served). Free tools answer immediately. Paid tools return an
 x402 `payment_required` carrying amount, network, and `payTo` — an agent with a funded
 wallet can settle and retry in the same session. Settlement only occurs on a successful
