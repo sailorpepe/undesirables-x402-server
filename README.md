@@ -6,7 +6,7 @@ An x402 micropayment-gated API providing **financial intelligence for the $50B+ 
 
 # ⚡ TCG Oracle — AI Card Grading & Market Data
 
-**48 endpoints listed — 10 paid via x402 · 38 free · 7 suspended while the USD price panel is frozen (since 2026-09-07) · USDC micropayments on Base/Solana + USDG on Robinhood Chain · Conformal-calibrated risk forecasts · Card-collateral loan terms · AI card grading**
+**51 endpoints listed — 10 paid via x402 · 41 free · 7 suspended while the USD price panel is frozen (since 2026-09-07) · USDC micropayments on Base/Solana + USDG on Robinhood Chain · Conformal-calibrated risk forecasts · Card-collateral loan terms · AI card grading**
 
 ![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white)
 ![License: BSL-1.1](https://img.shields.io/badge/License-BSL_1.1-red?style=flat-square)
