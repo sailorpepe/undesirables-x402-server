@@ -38,10 +38,12 @@ account, no API key.
 
 - Transport: streamable HTTP (MCP protocol 2025-06-18). Legacy SSE also served.
 - Auth: none.
-- Tools (23): search_tcg_products, market_snapshot*, trending_cards*, card_forecast,
+- Tools (27): search_tcg_products, market_snapshot*, trending_cards*, card_forecast,
   simulate_price*, optimize_portfolio* (* = suspended while the USD panel is frozen —
   the tool answers {"status":"suspended"} and does not charge), grade_card, grade_or_not, oracle_scorecard,
-  loan_terms_preview, souls_in_wallet, soul_calls, fantasy_league, sports_board, jp_summary (Japanese dealer panel as aggregates),
+  loan_terms_preview (graded slabs), loan_universe, graded_asks, census_summary,
+  jp_summary (Japanese two-sided board as aggregates), sports_board, sports_players,
+  fantasy_league, souls_in_wallet, soul_calls,
   syndicate_state, syndicate_move, syndicate_leaderboard, technocore_rooms,
   technocore_room, technocore_note, technocore_info, recommend_workflow
 - Free tools answer immediately. Paid tools return an x402 payment_required carrying
