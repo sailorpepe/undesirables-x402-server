@@ -142,7 +142,7 @@ The server automatically registers its JSON schemas with the Coinbase CDP Facili
 
 ## 🔌 API Endpoints
 
-### 48 Endpoints (10 Paid · 38 Free · 7 Suspended)
+### 51 Endpoints (10 Paid · 41 Free · 7 Suspended)
 
 > **USD panel frozen 2026-09-07.** Products whose core output is the USD price panel are *suspended* — they answer `200 {"status":"suspended"}` and do not charge — and reference lookups carry a `usd_panel {frozen, as_of}` block. Live today: graded-slab lending, sports, Japanese two-sided quotes, graded asks, census, crypto, souls. `GET /` is authoritative for counts.
 
