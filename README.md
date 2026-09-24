@@ -184,6 +184,9 @@ The server automatically registers its JSON schemas with the Coinbase CDP Facili
 | `GET /api/v1/merkle/proof` | Verify any price against the on-chain root — trustless |
 | `GET /api/v1/loan-terms/universe` | The rated universe for lending — every graded slab with a live value basis (~1,100), census liquidity tier, refreshed daily |
 | `GET /api/v1/census/summary` | Observed graded-slab supply totals |
+| `GET /api/v1/jp/summary` | **Japanese two-sided dealer board, as aggregates** — 366K cards across 24 games priced daily with a dealer ask *and* buyback bid (167K two-sided); price bands, per-game depth, day/week movement, and the day's Merkle root + both chain txs. No card rows by design |
+| `GET /api/v1/stamps/panel` | **Bitcoin Stamps market panel** — every SRC-20 token and stamp collection on stampchain.io, snapshotted daily. 7d/30d volume and price change are *derived from our own dated snapshots* because the upstream exchanges publish 24h only; each day's rows are Merkle-rooted on Base + LiteForge |
+| `GET /api/v1/stamps/panel/{tick}` | One SRC-20 tick's daily history with the commit root and tx hashes for each day |
 | `GET /api/v1/sports/leaderboard` · `/api/v1/souls/leaderboard` | Minted souls' on-chain-locked calls, mechanically graded |
 | [`/lending`](https://oracle.the-undesirables.com/lending) | **Loan-Terms explainer** — look up a graded slab, watch the max-LTV math derive step by step |
 
