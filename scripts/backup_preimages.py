@@ -136,7 +136,13 @@ def main():
         git("commit", "-q", "-m", f"preimage backup: {len(weeks)} committed week(s), {len(weeks)} roots")
     p = git("push", "origin", "HEAD:main")
     if p.returncode != 0:
-        alert(f"git push failed: {(p.stderr or p.stdout).strip().splitlines()[-1][:120] if (p.stderr or p.stdout).strip() else 'unknown'}")
+        # log the whole stderr: git's last line after a transport failure is a
+        # misleading "Everything up-to-date" (Aug 17 - Sep 26: HTTP 400 on >1 MiB
+        # chunked pushes from /usr/bin/git; fixed with repo-local http.postBuffer)
+        out = (p.stderr or p.stdout).strip()
+        print(out)
+        err = [l for l in out.splitlines() if l.startswith(("error:", "fatal:"))]
+        alert(f"git push failed: {(err[0] if err else out.splitlines()[-1] if out else 'unknown')[:160]}")
         raise SystemExit(1)
     # VERIFY off-machine: local HEAD must equal origin/main (proves the push landed)
     git("fetch", "origin", "-q")
