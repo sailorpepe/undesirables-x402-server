@@ -6,7 +6,7 @@ An API providing **financial intelligence for the $50B+ trading card market**, b
 
 # ⚡ TCG Oracle — Market Data, Risk & Collateral
 
-**46 endpoints, all free — pay-per-call paused 2026-10-02 · 7 suspended while the USD price panel is frozen (since 2026-09-07) · 5 retired (AI grading, batch triage, loan monitor) · Conformal-calibrated risk forecasts · Card-collateral loan terms · Sports, Japanese dealer board, souls**
+**45 endpoints, all free — pay-per-call paused 2026-10-02 · 7 suspended while the USD price panel is frozen (since 2026-09-07) · 6 retired (AI grading, its accuracy reports, batch triage, loan monitor) · Conformal-calibrated risk forecasts · Card-collateral loan terms · Sports, Japanese dealer board, souls**
 
 ![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white)
 ![License: BSL-1.1](https://img.shields.io/badge/License-BSL_1.1-red?style=flat-square)
@@ -140,7 +140,7 @@ The server automatically registers its JSON schemas with the Coinbase CDP Facili
 
 ## 🔌 API Endpoints
 
-### 46 Endpoints (all free · 7 Suspended · 5 Retired)
+### 45 Endpoints (all free · 7 Suspended · 6 Retired)
 
 > **USD panel frozen 2026-09-07.** Products whose core output is the USD price panel are *suspended* — they answer `200 {"status":"suspended"}` and do not charge — and reference lookups carry a `usd_panel {frozen, as_of}` block. Live today: graded-slab lending, sports, Japanese two-sided quotes, graded asks, census, crypto, souls. `GET /` is authoritative for counts.
 
