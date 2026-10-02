@@ -34,7 +34,9 @@ def main():
     expect(st == 200, f"/ -> {st}")
     root = json.loads(body) if st == 200 else {}
     ep = root.get("endpoints", {})
-    expect(len(ep.get("paid", [])) >= 1 and len(ep.get("free", [])) >= 1, "root endpoints lists empty")
+    paused = (root.get("pay_per_call") or {}).get("status") == "paused"
+    expect(len(ep.get("free", [])) >= 1 and (paused or len(ep.get("paid", [])) >= 1), "root endpoints lists empty")
+    expect(not paused or not ep.get("paid"), "pay_per_call paused but root still lists paid routes")
     expect("suspended" in ep, "root lacks endpoints.suspended")
     expect(isinstance(root.get("panels"), dict) and "usd" in root["panels"] and "japanese" in root["panels"], "root lacks panels")
     expect(isinstance(root.get("total_minted"), int), "root lacks total_minted")
@@ -42,6 +44,16 @@ def main():
     # retired -> 410, never charged
     for p in ("/api/v1/arb-cross", "/api/v1/arb-basket", "/api/v1/arb-weather", "/api/v1/casper/price", "/api/v1/phygital/stats"):
         st, _, _ = get(base, p); expect(st == 410, f"{p} -> {st} (want 410)")
+
+    # pay-per-call pause (2026-10-02): every retired paid route -> 410, never charged
+    for e in ep.get("retired", []):
+        st, _, _ = get(base, e["path"]); expect(st == 410, f"{e['path']} -> {st} (want 410 retired)")
+    # ...and the routes made free answer without payment
+    if paused:
+        st, body, _ = get(base, "/api/v1/loan-terms?product_id=477")
+        try: d = json.loads(body)
+        except Exception: d = {}
+        expect(st == 200 and d.get("price") == "free", f"/api/v1/loan-terms -> {st} price={d.get('price')} (want 200 free)")
 
     # suspended -> 200 + status suspended + not_charged, for every path the root lists
     for e in ep.get("suspended", []):
