@@ -20,7 +20,7 @@ import solcx
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(SCRIPT_DIR, ".env"))
-LT = "$HOME/Documents/litvm-tcg-oracle"
+LT = os.path.expanduser("~/Documents/litvm-tcg-oracle")
 BUILD_INFO = f"{LT}/artifacts/build-info/65126ffaf9a23e9ce5a8b98ef4f65a52.json"
 DATE = "20260731"
 MERKLE_LF = "0x20A812309AD14aa39B59aE2791972dfe8dDDe80E"
