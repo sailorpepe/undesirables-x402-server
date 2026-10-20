@@ -414,7 +414,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="The Undesirables — AI Tools API",
     description=(
-        "TCG card grading, conformal risk forecasting, and market intelligence. "
+        "Conformal risk forecasting and market intelligence for trading cards. "
         "Powered by x402 micropayments — USDC on Base, USDC on Solana, or USDG "
         "on Robinhood Chain; the 402 offers all three and the agent picks a leg. "
         "Free tools require no payment. Paid tools return HTTP 402 — "
@@ -1550,7 +1550,7 @@ async def root():
             "openapi": "/openapi.json",
             "docs": "/docs",
         },
-        "website": "https://the-undesirables.vercel.app",
+        "website": "https://the-undesirables.com",
     }
     # Derive the advertised counts from the payload itself and from the live DB,
     # so /?  can never disagree with what the server actually serves.
@@ -1563,10 +1563,10 @@ async def root():
     if _cards:
         _payload["total_products"] = _cards
         _payload["tagline"] = (
-            f"Conformal risk forecasts, AI grading, and Safe-Hold/Momentum card grades "
+            f"Conformal risk forecasts and Safe-Hold/Momentum card grades "
             f"for {_cards // 1000}K+ trading cards across 25+ games")
     else:
-        _payload["tagline"] = ("Conformal risk forecasts, AI grading, and Safe-Hold/Momentum "
+        _payload["tagline"] = ("Conformal risk forecasts and Safe-Hold/Momentum "
                                "card grades for 446K+ trading cards across 25+ games")
     return _payload
 
@@ -2290,7 +2290,7 @@ async def ai_plugin():
         "name_for_model": "tcg_oracle",
         "description_for_human": (
             "Financial intelligence API for trading card collectors. "
-            "AI grading, conformal risk forecasting, ROI analysis, "
+            "Conformal risk forecasting, ROI analysis, "
             "arbitrage detection, and portfolio optimization across "
             "446K+ products and 25+ card games."
         ),
@@ -2299,21 +2299,19 @@ async def ai_plugin():
             "FREE for agents: GET /api/v1/forecast (bulk board of the top ~200 cards) and "
             "GET /api/v1/forecast/{product_id} (any card) return a conformal-calibrated 30-day "
             "price forecast with honest VaR plus Safe-Hold and Momentum letter grades — no payment. "
-            "Use this when you need to: (1) grade a card image to predict PSA/Beckett scores, "
-            "(2) forecast future card prices (conformal-calibrated risk forecast by default), "
-            "(3) decide if grading a card is profitable (grade-or-not ROI engine), "
-            "(4) find undervalued cards where grading produces high ROI, "
-            "(5) optimize a card portfolio for risk-adjusted returns, "
-            "(6) monitor trending cards by sales volume and price velocity, "
-            "(7) batch-grade multiple cards and rank by profit potential. "
+            "Use this when you need to: "
+            "(1) forecast future card prices (conformal-calibrated risk forecast by default), "
+            "(2) find undervalued cards where grading produces high ROI, "
+            "(3) optimize a card portfolio for risk-adjusted returns, "
+            "(4) monitor trending cards by sales volume and price velocity. "
             "Paid endpoints use x402 micropayments (USDC on Base, USDC on Solana, or USDG on Robinhood Chain). "
             "Free search, market data, accuracy dashboard, and price alerts available without payment."
         ),
         "auth": {"type": "none"},
         "api": {"type": "openapi", "url": "/openapi.json"},
-        "logo_url": "https://the-undesirables.vercel.app/logo.png",
+        "logo_url": "https://the-undesirables.com/favicon.svg",
         "contact_email": "sailorpepe@proton.me",
-        "legal_info_url": "https://the-undesirables.vercel.app/privacy",
+        "legal_info_url": "https://the-undesirables.com/privacy",
         "x402": {
             "enabled": True,
             "network": NETWORK,
