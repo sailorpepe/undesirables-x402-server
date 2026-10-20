@@ -7636,25 +7636,15 @@ async def graded_merkle_proof(
 # Required by eBay for all developer apps, even if we don't store user data.
 # ---------------------------------------------------------------------------
 
-import hashlib
-
-EBAY_VERIFICATION_TOKEN = "undesirablesEbayDeletion2026tcgoracle"
-EBAY_DELETION_ENDPOINT = "https://oracle.the-undesirables.com/api/v1/ebay/deletion"
+# Legacy URL: since 2026-10-20 no eBay keyset is registered here, so it no
+# longer answers validation challenges. The POST keeps acknowledging any
+# notices eBay still has queued for it.
 
 
 @app.get("/api/v1/ebay/deletion", tags=["Compliance"])
-async def ebay_deletion_challenge(challenge_code: str = None):
-    """eBay endpoint verification — responds to challenge with hashed token."""
-    if not challenge_code:
-        return {"status": "ok", "message": "eBay deletion endpoint active"}
-
-    # eBay verification: SHA-256(challenge_code + verification_token + endpoint_url)
-    m = hashlib.sha256()
-    m.update(challenge_code.encode())
-    m.update(EBAY_VERIFICATION_TOKEN.encode())
-    m.update(EBAY_DELETION_ENDPOINT.encode())
-
-    return {"challengeResponse": m.hexdigest()}
+async def ebay_deletion_challenge():
+    """Legacy eBay deletion URL: liveness only, no challenge response."""
+    return {"status": "ok", "message": "eBay deletion endpoint active"}
 
 
 @app.post("/api/v1/ebay/deletion", tags=["Compliance"])

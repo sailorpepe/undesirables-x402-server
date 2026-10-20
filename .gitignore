@@ -34,3 +34,7 @@ bazaar_keepalive_state.json
 *.sqlite-shm
 *.db
 curl_output.txt
+
+# Debug dumps written under data/
+data/*_debug.json
+data/*_debug.txt
